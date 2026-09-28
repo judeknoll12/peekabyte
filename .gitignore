@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+oled.png
+ble.png
+build/
+.claude/

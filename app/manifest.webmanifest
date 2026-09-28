@@ -1,0 +1,14 @@
+{
+  "name": "Peekabyte",
+  "short_name": "Peekabyte",
+  "description": "A pocket pet made of two very expressive eyes.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0a0c16",
+  "theme_color": "#0a0c16",
+  "icons": [
+    { "src": "icon.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
