@@ -1521,6 +1521,7 @@ static String stateJson() {
   j += games::active() ? "game" : (eatFood >= 0 ? "eating" : (act::tag() == act::TAG_TRICK ? "trick" : ""));
   j += "\",\"game\":";
   j += games::active() ? games::stateJson() : String("null");
+  j += ",\"url\":"; jsonStr(j, SET.appUrl);
   j += ",\"imu\":\""; j += imu::chipName();
   j += "\",\"mtu\":"; j += comms::bleMtu();
   j += ",\"heap\":"; j += ESP.getFreeHeap();

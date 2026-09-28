@@ -177,24 +177,19 @@ void connectCard(float t, const char *bleName, bool connected) {
   const int tx = 68;
   gfx::text(u8g2_font_helvB08_tf, tx, 9, APP_NAME);
   for (int x = tx; x < 126; x += 2) gfx::px(x, 13, 1);
-  if (connected) {
-    gfx::text(u8g2_font_4x6_tf, tx, 22, "Phone connected!");
-    gfx::text(u8g2_font_4x6_tf, tx, 32, "Hold BOOT to");
-    gfx::text(u8g2_font_4x6_tf, tx, 39, "close this card.");
-  } else {
-    gfx::text(u8g2_font_4x6_tf, tx, 21, "Scan for the app,");
-    gfx::text(u8g2_font_4x6_tf, tx, 28, "open it in Bluefy");
-    gfx::text(u8g2_font_4x6_tf, tx, 35, "and tap Connect:");
-  }
+  static const char *const HELP[] = {"Scan me for", "the app. Open", "it in Bluefy,", "tap Connect:"};
+  static const char *const DONE[] = {"Phone is", "connected!", "Hold BOOT to", "close this."};
+  const char *const *lines = connected ? DONE : HELP;
+  for (int i = 0; i < 4; i++) gfx::text(u8g2_font_4x6_tf, tx, 21 + i * 7, lines[i]);
   U8G2 &u = gfx::u8g2();
-  u.setClipWindow(tx, 40, SCREEN_W, 50);
+  u.setClipWindow(tx, 46, SCREEN_W, 56);
   int sw = gfx::textW(u8g2_font_5x7_tf, bleName);
   int sx = tx;
   if (sw > SCREEN_W - tx - 1) sx = tx - (int)fmodf(t * 15, sw + 20) + (int)min(10.0f, t * 15);
-  gfx::text(u8g2_font_5x7_tf, sx, 48, bleName);
+  gfx::text(u8g2_font_5x7_tf, sx, 54, bleName);
   u.setMaxClipWindow();
   int dots = ((int)(t * 3)) % 4;
-  for (int i = 0; i < dots; i++) gfx::fillRect(tx + i * 4, 58, 2, 2, 1);
+  for (int i = 0; i < dots; i++) gfx::fillRect(tx + i * 4, 60, 2, 2, 1);
 }
 
 // ---- Toast -------------------------------------------------------------------------------------
