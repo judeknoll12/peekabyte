@@ -28,7 +28,7 @@
 #define BLE_TX_UUID      "f3a10003-5b1e-4c6b-9e0f-7065656b6162"   // pet -> phone (notify)
 
 // Shown as a QR code on the connect card until the app tells the pet its real address.
-#define APP_URL_DEFAULT  "https://peekabyte.github.io/"
+#define APP_URL_DEFAULT  "https://judeknoll12.github.io/peekabyte/"
 
 // ---- Limits -----------------------------------------------------------------
 #define NAME_MAX         16         // bytes of UTF-8 in the pet's name

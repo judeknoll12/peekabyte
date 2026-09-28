@@ -6,7 +6,7 @@ A pocket pet made of two very expressive eyes. It lives on an ESP32 with a 0.96"
 
 1. Power the Peekabyte. A fresh egg wobbles on the screen.
 2. On your iPhone, install the free **Bluefy – Web BLE Browser** from the App Store (Safari can't use Bluetooth from web pages). On Android, Chrome works as is.
-3. In Bluefy, open the app: **https://YOUR-GITHUB-NAME.github.io/peekabyte/**. Hold the pet's **BOOT** button for a second to show a QR code with the link.
+3. In Bluefy, open the app: **https://judeknoll12.github.io/peekabyte/**. Hold the pet's **BOOT** button for a second to show a QR code with the link.
 4. Tap **Connect with Bluetooth** and pick **Peeka …**.
 5. Name your egg (or keep the random name) and tap **Hatch!**
 

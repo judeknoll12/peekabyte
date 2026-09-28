@@ -40,6 +40,8 @@ bool load() {
     prefs.getBytes("set", &s, sizeof s);
     if (s.magic == SET_MAGIC) SET = s;
   }
+  if (strncmp(SET.appUrl, "https://", 8) || !strcmp(SET.appUrl, "https://peekabyte.github.io/"))
+    strlcpy(SET.appUrl, APP_URL_DEFAULT, sizeof SET.appUrl);   // placeholder from early builds
   if (prefs.getBytesLength("diary") == sizeof diary) {
     prefs.getBytes("diary", diary, sizeof diary);
     diaryHead = prefs.getUChar("dhead", 0) % DIARY_LEN;
