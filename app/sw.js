@@ -1,6 +1,6 @@
 // Keeps the app shell available offline. App files are fetched fresh when there's a
 // connection (so updates show up) and served from the cache when there isn't.
-const VERSION = 'peekabyte-v1';
+const VERSION = 'peekabyte-v2';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'icon.png',
   'js/main.js', 'js/link.js', 'js/protocol.js', 'js/mirror.js', 'js/sfx.js', 'js/voice.js', 'js/tts-worker.js',
