@@ -323,7 +323,7 @@ export class Brain extends EventTarget {
   async chat(text, ctx) {
     this.history.push({ role: 'user', content: text });
     this.history = this.history.slice(-6);
-    const res = await this.ask([{ role: 'system', content: this.persona(ctx) }, ...this.history], 40);
+    const res = await this.ask([{ role: 'system', content: this.persona(ctx) }, ...alternate(this.history)], 40);
     const out = res || { text: fallbackChat(text, ctx), emotion: 'happy' };
     this.history.push({ role: 'assistant', content: `[${out.emotion || 'happy'}] ${out.text}` });
     return out;
@@ -333,7 +333,7 @@ export class Brain extends EventTarget {
   async starter(idea, ctx) {
     const res = await this.ask([
       { role: 'system', content: this.persona(ctx) },
-      { role: 'user', content: `(Nobody has said anything for a while and you feel like chatting: ${idea}.) Say one short line to ${ctx.owner}.` },
+      { role: 'user', content: `(Start a conversation with ${ctx.owner}. ${idea}) Say it as the pet, in one short line.` },
     ], 36);
     if (res) this.remember(res.text, res.emotion);
     return res;
@@ -344,6 +344,19 @@ export class Brain extends EventTarget {
     this.history.push({ role: 'assistant', content: `[${emotion || 'happy'}] ${text}` });
     this.history = this.history.slice(-6);
   }
+}
+
+// Chat templates (Gemma's especially) want turns to alternate, starting with the owner. The
+// pet talking first, or twice in a row, is folded into that shape.
+function alternate(history) {
+  const out = [];
+  for (const m of history) {
+    const last = out[out.length - 1];
+    if (last?.role === m.role) last.content += `\n${m.content}`;
+    else out.push({ ...m });
+  }
+  if (out[0]?.role === 'assistant') out.unshift({ role: 'user', content: '(You start chatting.)' });
+  return out;
 }
 
 // Clean up whatever the model said into one tidy line plus an optional mood.

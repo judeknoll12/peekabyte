@@ -99,13 +99,15 @@ export function starter(ctx) {
   const kind = pick(kinds);
   const pool = ctx.stage === 1 ? BABY_CHAT : CHAT[kind];
   const text = pick(pool).replace(/\{(\w+)\}/g, (_, k) => ctx[k] ?? '').replace(/\s+/g, ' ').trim();
+  // Direct instructions: small models ask real questions far more often when told to.
+  const o = ctx.owner;
   const idea = {
-    ask: `ask ${ctx.owner} a fun, friendly question about their day or the things they like`,
-    tell: 'tell them a tiny, cute thought or something silly you noticed',
-    joke: 'tell them a very short, silly, kid-friendly joke',
-    morning: `say good morning to ${ctx.owner} and ask how they slept`,
-    evening: `ask ${ctx.owner} how their day went`,
-    late: 'notice that it is getting late and ask if they are sleepy too',
+    ask: `Ask ${o} one fun, friendly question about their day or the things they like. End with a question mark.`,
+    tell: `Tell ${o} one tiny, cute or silly thought you just had.`,
+    joke: `Tell ${o} a very short, silly, kid-friendly joke.`,
+    morning: `Say good morning to ${o} and ask how they slept. End with a question mark.`,
+    evening: `Ask ${o} how their day went. End with a question mark.`,
+    late: `Notice that it is getting late and ask ${o} if they are sleepy too. End with a question mark.`,
   }[kind];
   return { text, emotion: kind === 'joke' ? 'joy' : kind === 'ask' ? 'happy' : 'thinking', idea };
 }
