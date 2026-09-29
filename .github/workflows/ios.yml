@@ -21,6 +21,7 @@ jobs:
     timeout-minutes: 40
     env:
       LLAMA_BUILD: b11242
+      SHERPA_VERSION: 1.13.8
     steps:
       - uses: actions/checkout@v7
 
@@ -30,6 +31,19 @@ jobs:
           unzip -q llama.zip 'build-apple/llama.xcframework/*' -d "$RUNNER_TEMP/llama"
           mkdir -p ios/Frameworks
           mv "$RUNNER_TEMP/llama/build-apple/llama.xcframework" ios/Frameworks/
+
+      - name: Get sherpa-onnx (the natural voice) for iPhone
+        run: |
+          curl -sSL -o sherpa.zip "https://github.com/k2-fsa/sherpa-onnx/releases/download/xcframework/sherpa-onnx-v${SHERPA_VERSION}-ios-shared-onnxruntime-static.xcframework.zip"
+          unzip -q sherpa.zip -d "$RUNNER_TEMP/sherpa"
+          mv "$RUNNER_TEMP/sherpa/SherpaOnnxC.xcframework" ios/Frameworks/
+          # Kokoro's pronunciation data ships inside the app; the model is downloaded in the app.
+          curl -sSL -o kokoro.tar.bz2 "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-int8-multi-lang-v1_0.tar.bz2"
+          K=kokoro-int8-multi-lang-v1_0
+          tar -xjf kokoro.tar.bz2 -C "$RUNNER_TEMP" "$K/espeak-ng-data" "$K/tokens.txt" "$K/lexicon-us-en.txt"
+          mkdir -p ios/Voice
+          mv "$RUNNER_TEMP/$K/espeak-ng-data" "$RUNNER_TEMP/$K/tokens.txt" "$RUNNER_TEMP/$K/lexicon-us-en.txt" ios/Voice/
+          du -sh ios/Voice ios/Frameworks/*
 
       - name: Make the Xcode project
         run: |

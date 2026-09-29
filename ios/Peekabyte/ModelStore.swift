@@ -1,6 +1,7 @@
 import Foundation
 
-/// Downloads the AI brains (GGUF files from Hugging Face) into the app's own storage, where
+/// Downloads the AI brains (GGUF files) and the natural voice (ONNX + voice table) from
+/// Hugging Face into the app's own storage, where
 /// iOS won't clear them. Interrupted downloads pick up where they left off.
 final class ModelStore: NSObject, URLSessionDownloadDelegate {
     var emit: ((String, [String: Any]) -> Void)?
@@ -29,15 +30,18 @@ final class ModelStore: NSObject, URLSessionDownloadDelegate {
 
     var isDownloading: Bool { !tasks.isEmpty }
 
-    /// Only plain file names ending in .gguf, so the page can't touch anything else.
+    static let kinds: Set<String> = ["gguf", "onnx", "bin"]
+
+    /// Only plain file names of the kinds above, so the page can't touch anything else.
     func path(_ file: String) -> URL? {
-        guard file.hasSuffix(".gguf"), !file.contains("/"), !file.contains("\\"), !file.hasPrefix(".") else { return nil }
+        let kind = (file as NSString).pathExtension.lowercased()
+        guard Self.kinds.contains(kind), !file.contains("/"), !file.contains("\\"), !file.hasPrefix(".") else { return nil }
         return folder.appendingPathComponent(file)
     }
 
     func files() -> [[String: Any]] {
         let items = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.fileSizeKey])) ?? []
-        return items.filter { $0.pathExtension == "gguf" }.map { url in
+        return items.filter { Self.kinds.contains($0.pathExtension.lowercased()) }.map { url in
             let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
             return ["file": url.lastPathComponent, "bytes": Double(size)]
         }

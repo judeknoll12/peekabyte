@@ -1,7 +1,12 @@
 // The pet's voice: Kokoro (open-source neural TTS), the phone's own voices, or babble.
 // Pitch, speed and effects are all adjustable; while speaking we report a loudness
 // level so the pet's face can move with the words.
+//
+// Kokoro runs natively in the iPhone app (sherpa-onnx on the CPU, fast), or in a web worker
+// elsewhere (slower on phones). Either way a line that isn't ready in time is said by the
+// phone's voice instead, so the pet never goes quiet.
 
+import { call, isNative, on } from './native.js';
 import { audioCtx, output } from './sfx.js';
 
 export const PRESETS = [
@@ -23,7 +28,27 @@ export const KOKORO_VOICES = [
   ['bm_george', 'George (UK)'], ['bm_fable', 'Fable (UK)'],
 ];
 
+// Speaker numbers in the Kokoro v1.0 voice table (read from the model's own metadata).
+const SPEAKER = {
+  af_bella: 2, af_heart: 3, af_nicole: 6, af_nova: 7, af_river: 8, af_sarah: 9, af_sky: 10, am_adam: 11,
+  am_echo: 12, am_fenrir: 14, am_liam: 15, am_michael: 16, am_puck: 18, bf_emma: 21, bf_lily: 23, bm_fable: 25, bm_george: 26,
+};
+
+// The native voice's files (iPhone app): Kokoro v1.0 packaged for sherpa-onnx, Apache 2.0.
+const hf = (file) => `https://huggingface.co/csukuangfj/kokoro-multi-lang-v1_0/resolve/main/${file}`;
+export const NATIVE_VOICE_FILES = [
+  { file: 'kokoro-v1_0.onnx', url: hf('model.onnx'), mb: 326 },
+  { file: 'kokoro-voices-v1_0.bin', url: hf('voices.bin'), mb: 28 },
+];
+export const kokoroDownloadMB = () => (nativeTts ? 354 : 92);
+
 export const EFFECTS = [['none', 'None'], ['robot', 'Robot'], ['echo', 'Echo'], ['radio', 'Walkie-talkie'], ['cave', 'Cave']];
+
+// Does this iPhone app build have the native voice? (Older builds answer "unknown request".)
+let nativeTts = false;
+export const nativeVoiceCheck = isNative
+  ? call('tts.state').then(() => { nativeTts = true; }, () => { nativeTts = false; })
+  : Promise.resolve();
 
 export function cleanForSpeech(text) {
   return text
@@ -34,6 +59,17 @@ export function cleanForSpeech(text) {
     .trim();
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Make sure the sound engine is actually playing (iOS parks it after interruptions).
+async function audioRunning() {
+  const c = audioCtx();
+  if (c.state !== 'running') {
+    try { await Promise.race([c.resume(), sleep(500)]); } catch { /* not allowed yet */ }
+  }
+  return c.state === 'running';
+}
+
 export class Voice extends EventTarget {
   constructor() {
     super();
@@ -41,6 +77,12 @@ export class Voice extends EventTarget {
     this.kState = 'off';      // off | loading | ready | error
     this.kProgress = 0;
     this.kInfo = '';
+    this.kBackend = '';       // native | web
+    this.kSlowness = 0;       // seconds of work per second of speech, measured on real lines
+    this.kWhere = '';         // where it runs, for the settings page
+    this.rendering = 0;       // lines being made right now
+    this.kMisses = 0;         // lines in a row that weren't ready in time
+    this.kTooSlow = false;    // gave up on Kokoro for now: the phone voice fills in
     this.worker = null;
     this.pending = new Map();
     this.queue = [];
@@ -54,16 +96,72 @@ export class Voice extends EventTarget {
   }
 
   status() {
-    return { engine: this.cfg.engine, kokoro: this.kState, progress: this.kProgress, info: this.kInfo };
+    return { engine: this.cfg.engine, kokoro: this.kState, progress: this.kProgress, info: this.kInfo, tooSlow: this.kTooSlow, backend: this.kBackend };
   }
 
   emit() { this.dispatchEvent(new CustomEvent('status', { detail: this.status() })); }
 
-  loadKokoro() {
-    if (this.worker) return;
+  get kokoroOn() { return this.cfg.engine === 'kokoro' && this.kState === 'ready' && !this.kTooSlow; }
+
+  async loadKokoro() {
+    if (this.kState === 'loading' || this.kState === 'ready') return;
     this.kState = 'loading';
     this.kProgress = 0;
+    this.kInfo = '';
+    this.kTooSlow = false;
+    this.kMisses = 0;
     this.emit();
+    await nativeVoiceCheck;
+    if (nativeTts) this.loadNative();
+    else this.loadWeb();
+  }
+
+  // ---- Kokoro in the iPhone app ---------------------------------------------------------
+  async loadNative() {
+    this.kBackend = 'native';   // runs in the app, not the page
+    try {
+      const { files } = await call('llm.files');
+      const have = new Set(files.map((f) => f.file));
+      const missing = NATIVE_VOICE_FILES.filter((f) => !have.has(f.file));
+      const total = missing.reduce((a, f) => a + f.mb, 0);
+      let done = 0;
+      for (const f of missing) {
+        await this.downloadNative(f, (share) => {
+          this.kProgress = (done + share * f.mb) / total;
+          this.emit();
+        });
+        done += f.mb;
+      }
+      this.kProgress = 1;
+      this.kInfo = 'Warming up…';
+      this.emit();
+      const r = await call('tts.load', { model: NATIVE_VOICE_FILES[0].file, voices: NATIVE_VOICE_FILES[1].file });
+      this.kBackend = 'native';
+      this.kWhere = r.rate ? 'built into the app' : 'on this iPhone';
+      this.kState = 'ready';
+      this.kInfo = this.speedNote();
+      this.emit();
+    } catch (e) {
+      this.kState = 'error';
+      this.kInfo = String(e?.message || e);
+      this.emit();
+    }
+  }
+
+  downloadNative(f, onShare) {
+    return new Promise((resolve, reject) => {
+      const offs = [];
+      const finish = (err) => { offs.forEach((off) => off()); if (err) reject(err); else resolve(); };
+      offs.push(on('llm.progress', (d) => { if (d.file === f.file && d.total) onShare(d.loaded / d.total); }));
+      offs.push(on('llm.downloaded', (d) => { if (d.file === f.file) finish(); }));
+      offs.push(on('llm.failed', (d) => { if (d.file === f.file) finish(new Error(d.error)); }));
+      call('llm.download', { url: f.url, file: f.file, bytes: f.mb * 1e6 }).catch(finish);
+    });
+  }
+
+  // ---- Kokoro in a web worker ---------------------------------------------------------
+  loadWeb() {
+    if (this.worker) return;
     const w = new Worker(new URL('./tts-worker.js', import.meta.url), { type: 'module' });
     this.worker = w;
     const files = new Map();
@@ -75,32 +173,94 @@ export class Voice extends EventTarget {
         let a = 0, b = 0;
         for (const [l, t] of files.values()) { a += l; b += t; }
         if (b) this.kProgress = a / b;
+        if (this.kProgress >= 0.999) this.kInfo = 'Warming up…';
         this.emit();
       } else if (m.type === 'ready') {
-        this.kState = 'ready';
-        this.kInfo = `${m.device === 'webgpu' ? 'GPU' : 'CPU'} · ${m.dtype}`;
-        this.emit();
+        this.kBackend = 'web';
+        this.warmUpWeb(m);
       } else if (m.type === 'error') {
-        this.kState = 'error';
-        this.kInfo = m.message;
-        this.worker = null;
-        this.emit();
+        this.failWorker(m.message);
       } else if (m.type === 'audio' || m.type === 'fail') {
         const cb = this.pending.get(m.id);
         this.pending.delete(m.id);
         cb?.(m);
       }
     };
-    w.onerror = (e) => {
-      this.kState = 'error';
-      this.kInfo = e.message || 'voice worker failed';
-      this.worker = null;
-      this.emit();
-    };
+    w.onerror = (e) => this.failWorker(e.message || 'The voice stopped working');
     // Phones get the small CPU model (~90 MB): the GPU one is ~330 MB, and a page that uses
     // too much memory gets killed, taking the Bluetooth link with it.
     const phone = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) || navigator.userAgentData?.mobile;
     w.postMessage({ type: 'load', device: phone ? 'wasm' : 'auto' });
+  }
+
+  // Say a short word to itself first: the very first line is always slow (setting up).
+  async warmUpWeb(m) {
+    await this.renderWeb('Hi there.', 1).catch(() => null);
+    this.kWhere = `${m.device === 'webgpu' ? 'GPU' : 'CPU'} · ${m.dtype}`;
+    this.kState = 'ready';
+    this.kInfo = this.speedNote();
+    this.emit();
+  }
+
+  noteSpeed(x) {
+    this.kSlowness = this.kSlowness ? this.kSlowness * 0.6 + x * 0.4 : x;
+    this.kInfo = this.speedNote();
+    this.emit();
+  }
+
+  speedNote() {
+    if (!this.kSlowness) return this.kWhere;
+    const lag = this.kSlowness * 2.5;   // a typical line is about 2.5 seconds long
+    return `${this.kWhere} · a short line takes about ${lag < 1 ? 'under a second' : `${lag.toFixed(1)} s`} to make`;
+  }
+
+  failWorker(message) {
+    this.kState = 'error';
+    this.kInfo = message;
+    this.worker?.terminate();
+    this.worker = null;
+    for (const cb of this.pending.values()) cb({ type: 'fail', message });   // don't leave any line waiting
+    this.pending.clear();
+    this.emit();
+  }
+
+  renderWeb(text, speed) {
+    return new Promise((resolve, reject) => {
+      if (!this.worker) { reject(new Error('The voice isn\'t loaded')); return; }
+      const id = this.nextId++;
+      this.pending.set(id, (m) => (m.type === 'audio' ? resolve({ pcm: m.audio, rate: m.rate }) : reject(new Error(m.message))));
+      this.worker.postMessage({ type: 'speak', id, text, voice: this.cfg.voice || 'af_heart', speed });
+    });
+  }
+
+  async renderNative(text, speed) {
+    const r = await call('tts.speak', { text, sid: SPEAKER[this.cfg.voice] ?? 3, speed });
+    const bin = atob(r.pcm);
+    const pcm = new Float32Array(bin.length >> 1);
+    for (let i = 0; i < pcm.length; i++) {
+      const v = bin.charCodeAt(2 * i) | (bin.charCodeAt(2 * i + 1) << 8);
+      pcm[i] = (v > 32767 ? v - 65536 : v) / 32768;
+    }
+    return { pcm, rate: r.rate };
+  }
+
+  // Start making the audio for a line right away (while earlier lines are still playing).
+  prepare(item) {
+    if (!this.kokoroOn || item.audio) return;
+    const pitchRate = 2 ** (this.cfg.pitch / 12);
+    const speed = Math.max(0.5, Math.min(2, this.cfg.speed / pitchRate));
+    item.pitchRate = pitchRate;
+    const started = performance.now();
+    const alone = this.rendering === 0;   // only time lines that didn't wait behind another
+    this.rendering++;
+    item.audio = (this.kBackend === 'native' ? this.renderNative(item.text, speed) : this.renderWeb(item.text, speed))
+      .then((a) => {
+        if (alone) this.noteSpeed((performance.now() - started) / 1000 / (a.pcm.length / a.rate));
+        return a;
+      })
+      .finally(() => { this.rendering--; });
+    item.audio.catch(() => {});   // looked at later; a failure just means the phone voice says it
+    item.queuedAt = performance.now();
   }
 
   // Queue a line; resolves when it has been spoken (or skipped).
@@ -108,8 +268,10 @@ export class Voice extends EventTarget {
     const clean = cleanForSpeech(text);
     if (!clean) return Promise.resolve();
     return new Promise((resolve) => {
-      if (this.queue.length > 2) this.queue.splice(0, this.queue.length - 2);   // don't fall behind
-      this.queue.push({ text: clean, hooks, resolve });
+      if (this.queue.length > 2) this.queue.splice(0, this.queue.length - 2).forEach((q) => q.resolve());   // don't fall behind
+      const item = { text: clean, hooks, resolve };
+      this.prepare(item);
+      this.queue.push(item);
       this.run();
     });
   }
@@ -118,7 +280,7 @@ export class Voice extends EventTarget {
     this.queue.forEach((q) => q.resolve());
     this.queue = [];
     this.current?.stop?.();
-    speechSynthesis?.cancel?.();
+    window.speechSynthesis?.cancel?.();
   }
 
   async run() {
@@ -128,8 +290,8 @@ export class Voice extends EventTarget {
       const item = this.queue.shift();
       const eng = this.cfg.engine;
       try {
-        if (eng === 'kokoro' && this.kState === 'ready') await this.sayKokoro(item);
-        else if (eng === 'babble' || (eng === 'kokoro' && this.kState !== 'ready' && this.cfg.fallback === 'babble')) await this.sayBabble(item);
+        if (eng === 'kokoro' && this.kokoroOn) await this.sayKokoro(item);
+        else if (eng === 'babble' || (eng === 'kokoro' && this.cfg.fallback === 'babble')) await this.sayBabble(item);
         else await this.saySystem(item);
       } catch (e) {
         console.warn('speak failed', e);
@@ -142,17 +304,28 @@ export class Voice extends EventTarget {
   }
 
   // ---- Kokoro ------------------------------------------------------------------------
-  sayKokoro(item) {
-    const rate = 2 ** (this.cfg.pitch / 12);
-    const speed = Math.max(0.5, Math.min(2, this.cfg.speed / rate));
-    return new Promise((resolve) => {
-      const id = this.nextId++;
-      this.pending.set(id, (m) => {
-        if (m.type !== 'audio') { this.saySystem(item).then(resolve); return; }
-        this.playPcm(m.audio, m.rate, rate, item.hooks).then(resolve);
-      });
-      this.worker.postMessage({ type: 'speak', id, text: item.text, voice: this.cfg.voice || 'af_heart', speed });
-    });
+  async sayKokoro(item) {
+    this.prepare(item);
+    // How long we'll wait: long enough for a healthy voice, short enough not to feel broken.
+    const budget = (this.kBackend === 'native' ? 2500 : 4000) + item.text.length * (this.kBackend === 'native' ? 40 : 90);
+    const waited = performance.now() - (item.queuedAt || performance.now());
+    let audio = null;
+    try {
+      audio = await Promise.race([item.audio, sleep(Math.max(1500, budget - waited)).then(() => null)]);
+    } catch (e) {
+      console.warn('voice failed', e);
+    }
+    if (!audio) {
+      this.kMisses++;
+      if (this.kMisses >= 3) {   // it keeps missing: stop trying for now, the phone voice takes over
+        this.kTooSlow = true;
+        this.emit();
+      }
+      return this.saySystem(item);
+    }
+    this.kMisses = 0;
+    if (!(await audioRunning())) return this.saySystem(item);   // no sound output yet: never go silent
+    return this.playPcm(audio.pcm, audio.rate, item.pitchRate || 1, item.hooks);
   }
 
   playPcm(pcm, sampleRate, playbackRate, hooks) {

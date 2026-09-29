@@ -20,6 +20,10 @@ targets:
     platform: iOS
     sources:
       - path: Peekabyte
+      # The natural voice's pronunciation data (espeak-ng, lexicon, tokens), fetched by the build.
+      - path: Voice
+        type: folder
+        buildPhase: resources
     settings:
       base:
         PRODUCT_NAME: Peekabyte
@@ -32,4 +36,6 @@ targets:
         SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
     dependencies:
       - framework: Frameworks/llama.xcframework
+        embed: true
+      - framework: Frameworks/SherpaOnnxC.xcframework
         embed: true

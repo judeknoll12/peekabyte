@@ -16,6 +16,7 @@ final class Bridge: NSObject, WKScriptMessageHandler {
     let ble = BLE()
     let models = ModelStore()
     let llm = LLM()
+    let speech = Speech()
     private var wantAwake = false
 
     static let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
@@ -115,6 +116,20 @@ final class Bridge: NSObject, WKScriptMessageHandler {
             done(.success(true))
         case "llm.unload":
             llm.unload()
+            done(.success(true))
+
+        case "tts.state":
+            done(.success(["loaded": speech.loadedModel]))
+        case "tts.load":
+            guard let model = models.path(str("model")), let voices = models.path(str("voices")),
+                  FileManager.default.fileExists(atPath: model.path), FileManager.default.fileExists(atPath: voices.path) else {
+                return done(.failure(BridgeError("The natural voice isn't downloaded yet.")))
+            }
+            speech.load(model: model, voices: voices) { r in done(r.map { $0 as Any }) }
+        case "tts.speak":
+            speech.speak(text: str("text"), speaker: Int(num("sid", 3)), speed: Float(num("speed", 1))) { r in done(r.map { $0 as Any }) }
+        case "tts.unload":
+            speech.unload()
             done(.success(true))
 
         default:

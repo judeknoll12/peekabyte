@@ -6,3 +6,4 @@ build/
 .claude/
 ios/Frameworks/
 ios/Peekabyte.xcodeproj/
+ios/Voice/

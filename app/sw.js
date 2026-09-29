@@ -1,6 +1,6 @@
 // Keeps the app shell available offline. App files are fetched fresh when there's a
 // connection (so updates show up) and served from the cache when there isn't.
-const VERSION = 'peekabyte-v4';
+const VERSION = 'peekabyte-v5';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'icon.png',
   'js/main.js', 'js/link.js', 'js/protocol.js', 'js/mirror.js', 'js/sfx.js', 'js/voice.js', 'js/tts-worker.js',
@@ -20,10 +20,15 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (url.origin !== location.origin || e.request.method !== 'GET') return;
-  e.respondWith(fetch(e.request)
+  const live = url.pathname.endsWith('version.json');
+  // Always check with the server (unchanged files come back as a cheap "not modified"), so a
+  // new version never mixes with stale files from the browser's own cache.
+  e.respondWith(fetch(e.request.url, { cache: 'no-cache', credentials: 'same-origin' })
     .then((res) => {
-      const copy = res.clone();
-      caches.open(VERSION).then((c) => c.put(e.request, copy));
+      if (res.ok && !live) {
+        const copy = res.clone();
+        caches.open(VERSION).then((c) => c.put(e.request, copy));
+      }
       return res;
     })
     .catch(() => caches.match(e.request)));

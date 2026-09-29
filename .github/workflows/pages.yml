@@ -22,7 +22,15 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+      # Each deploy gets a build id: the page knows its own, and version.json says what's live,
+      # so a running app can tell when there's something newer (see "updates" in js/main.js).
+      - name: Stamp the version
+        run: |
+          BUILD="${GITHUB_SHA::7}"
+          sed -i "s/name=\"peekabyte-build\" content=\"dev\"/name=\"peekabyte-build\" content=\"$BUILD\"/" app/index.html
+          grep -q "content=\"$BUILD\"" app/index.html
+          printf '{"build":"%s","time":"%s"}\n' "$BUILD" "$(date -u +%FT%TZ)" > app/version.json
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

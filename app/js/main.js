@@ -11,7 +11,7 @@ import {
   TRAITS, TRICKS, TRICK_MODE, TRICK_MOVES_MAX, enc,
 } from './protocol.js';
 import * as sfx from './sfx.js';
-import { EFFECTS, KOKORO_VOICES, PRESETS, Voice } from './voice.js';
+import { EFFECTS, KOKORO_VOICES, PRESETS, Voice, kokoroDownloadMB, nativeVoiceCheck } from './voice.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -278,6 +278,54 @@ function trackLink(lk) {
   }
 }
 
+// ---------------------------------------------------------------- updates ----
+// The app's pages come from GitHub Pages. When a newer version is live, reload into it at a
+// quiet moment. In the iPhone app the pet stays connected through the reload (the Bluetooth
+// link lives in the app, not the page); in a browser the reload would drop it, so there the
+// update waits until the next visit.
+const BUILD = document.querySelector('meta[name="peekabyte-build"]')?.content || 'dev';
+let updateReady = false;
+let updateToldUser = false;
+
+async function checkForUpdate() {
+  if (BUILD === 'dev' || location.protocol !== 'https:' || updateReady) return;
+  try {
+    const live = await fetch('version.json', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null));
+    if (!live?.build || live.build === BUILD) return;
+    // Right after a deploy the servers can briefly hand out the old page with the new stamp:
+    // reload for a given version at most once every 15 minutes, never in a loop.
+    let tried = null;
+    try { tried = JSON.parse(sessionStorage.getItem('peekabyte.reloadedFor') || 'null'); } catch { /* ignore */ }
+    if (tried?.build === live.build && Date.now() - tried.at < 15 * 60 * 1000) return;
+    updateReady = live.build;
+    applyUpdate();
+  } catch { /* offline */ }
+}
+
+function quietMoment() {
+  const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName);
+  return !ui.sheet && !ui.lookDirty && !S?.game && !typing && !voice.busy && ui.train < 0;
+}
+
+function applyUpdate() {
+  if (!updateReady) return;
+  if (!isNative && link.connected) {
+    if (!updateToldUser) { updateToldUser = true; toast('An update is ready: it loads the next time you open Peekabyte', 3500); }
+    return;
+  }
+  if (!quietMoment()) return;   // tried again every few seconds
+  try { sessionStorage.setItem('peekabyte.reloadedFor', JSON.stringify({ build: updateReady, at: Date.now() })); } catch { /* ignore */ }
+  connlog.log('Updated the app', 'info');
+  location.reload();
+}
+
+function startUpdates() {
+  setTimeout(checkForUpdate, 8000);
+  setInterval(() => { if (!document.hidden) checkForUpdate(); }, 10 * 60 * 1000);
+  setInterval(applyUpdate, 5000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) checkForUpdate(); });
+}
+
 // ---------------------------------------------------------------- crash guard ----
 // Phones kill a web page that uses too much memory (the AI models are big), which drops
 // Bluetooth too. If the last visit ended that way while a model was loaded, hold off on it.
@@ -289,7 +337,7 @@ function guardBeat() {
     localStorage.setItem(GUARD_KEY, JSON.stringify({
       t: Date.now(), vis: !document.hidden,
       ai: !isNative && (brain.state === 'loading' || brain.state === 'ready') ? prefs.brain : '',
-      tts: voice.kState === 'loading' || voice.kState === 'ready',
+      tts: (voice.kState === 'loading' || voice.kState === 'ready') && voice.kBackend !== 'native',
     }));
   } catch { /* private mode */ }
 }
@@ -1016,12 +1064,20 @@ function renderSettings() {
   if (prefs.voice.engine === 'kokoro') {
     if (!prefs.kokoroOk || k.kokoro === 'off') {
       vc.append(el('div', { class: 'card', style: 'background:rgba(94,231,255,.07);margin-bottom:10px' },
-        el('b', {}, 'Natural voices need a one-time download (~90 MB).'),
+        el('b', {}, `Natural voices need a one-time download (~${kokoroDownloadMB()} MB).`),
         el('div', { class: 'muted', style: 'font-size:13px;margin:4px 0 10px' }, 'Kokoro is an open-source voice model that runs on this phone. Until it\'s downloaded, the phone voice fills in.'),
         el('button', { class: 'btn primary block', onclick: () => { prefs.kokoroOk = true; savePrefs(); voice.loadKokoro(); renderSettings(); } }, '⬇️ Download natural voices')));
     } else {
-      vc.append(el('div', { class: 'muted', style: 'font-size:13px;margin-bottom:6px' },
-        k.kokoro === 'ready' ? `✅ Natural voices ready (${k.info})` : k.kokoro === 'loading' ? `Downloading voices… ${Math.round(k.progress * 100)}%` : `⚠️ ${k.info || 'Voice error'}`));
+      const retry = () => el('button', { class: 'btn small', style: 'margin:0 0 10px', onclick: () => { voice.kTooSlow = false; voice.kMisses = 0; if (voice.kState === 'error') { voice.kState = 'off'; voice.loadKokoro(); } voice.emit(); testVoice(); } }, '🔁 Try again');
+      if (k.kokoro === 'ready' && k.tooSlow) {
+        vc.append(el('div', { class: 'muted', style: 'font-size:13px;margin-bottom:6px;color:#ffd9a8' },
+          `⚠️ The natural voice was too slow here, so the phone voice is filling in.${isNative && k.backend === 'web' ? ' Reinstall the latest iPhone app for the fast built-in natural voice.' : ''}`), retry());
+      } else if (k.kokoro === 'error') {
+        vc.append(el('div', { class: 'muted', style: 'font-size:13px;margin-bottom:6px;color:#ffc2ca' }, `⚠️ ${k.info || 'The voice stopped working'}. The phone voice is filling in.`), retry());
+      } else {
+        vc.append(el('div', { class: 'muted', style: 'font-size:13px;margin-bottom:6px' },
+          k.kokoro === 'ready' ? `✅ Natural voices ready (${k.info})` : k.kokoro === 'loading' ? (k.progress >= 0.999 ? 'Warming the voice up…' : `Downloading voices… ${Math.round(k.progress * 100)}%`) : ''));
+      }
       if (k.kokoro === 'loading') vc.append(el('div', { class: 'progress' }, el('i', { style: `width:${Math.round(k.progress * 100)}%` })));
     }
   }
@@ -1217,13 +1273,18 @@ function initMirror() {
 function init() {
   initMirror();
   startGuard();
+  startUpdates();
   sfx.setVolume(prefs.sfxVol);
   sfx.setEnabled(prefs.sfx);
   applyVoice();
+  nativeVoiceCheck.then(() => { if (ui.tab === 'more') renderSettings(); });
   if (prefs.brain && !ui.aiPaused) brain.load(prefs.brain);
   renderBrainCard();
   updateConnectButton();
-  document.addEventListener('pointerdown', () => sfx.unlock(), { once: true });
+  // Keep the sound engine running: iOS parks it ("interrupted") after calls, other apps'
+  // audio or a trip to the background, and only a tap or a return to the app revives it.
+  document.addEventListener('pointerdown', () => sfx.unlock());
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) sfx.unlock(); });
   window.speechSynthesis?.addEventListener?.('voiceschanged', () => { if (ui.tab === 'more') renderSettings(); });
 
   $('#thisUrl').textContent = location.href.replace(/#.*$/, '');

@@ -21,7 +21,7 @@ export function output() {
 // iOS only lets pages make sound after a tap; call this from the first one.
 export function unlock() {
   const c = audioCtx();
-  if (c.state === 'suspended') c.resume();
+  if (c.state !== 'running') c.resume().catch(() => {});   // "suspended", or iOS's "interrupted"
   try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch { /* not supported */ }
   const b = c.createBuffer(1, 1, 22050), s = c.createBufferSource();
   s.buffer = b;
