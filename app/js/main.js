@@ -62,7 +62,9 @@ const ACCENTS = {
   peach: ['Peach', '#ea6a10', '#fb9a4b'], rose: ['Rose', '#e0357f', '#f779b0'],
 };
 const systemDark = matchMedia('(prefers-color-scheme: dark)');
-const themeNow = () => (prefs.theme === 'system' ? (systemDark.matches ? 'dark' : 'light') : prefs.theme);
+// iPhone app builds from before themes keep a white status bar: stay dark there unless asked.
+let oldShell = isNative && window.PeekaNative?.version === '1.0';
+const themeNow = () => (prefs.theme === 'system' ? (systemDark.matches || oldShell ? 'dark' : 'light') : prefs.theme);
 
 function applyTheme() {
   const t = themeNow();
@@ -71,7 +73,12 @@ function applyTheme() {
   root.dataset.accent = ACCENTS[prefs.accent] ? prefs.accent : 'violet';
   const bg = t === 'dark' ? '#0d0e1a' : '#f4f2fb';
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', bg);
-  if (isNative) call('app.theme', { dark: t === 'dark', bg, follow: prefs.theme === 'system' }).catch(() => {});
+  if (isNative && !oldShell) {
+    call('app.theme', { dark: t === 'dark', bg, follow: prefs.theme === 'system' }).catch(() => {
+      oldShell = true;
+      if (t === 'light') applyTheme();
+    });
+  }
 }
 systemDark.addEventListener?.('change', () => { if (prefs.theme === 'system') applyTheme(); });
 
@@ -1400,7 +1407,8 @@ function renderSettings() {
 
   // --- Appearance
   const ap = el('div', { class: 'card' }, el('h3', {}, '🎨 Appearance'));
-  ap.append(stackRow('Theme', prefs.theme === 'system' ? `Follows your phone (${themeNow()} right now)` : null,
+  ap.append(stackRow('Theme', oldShell ? 'Reinstall the latest iPhone app for Auto and a matching status bar'
+    : prefs.theme === 'system' ? `Follows your phone (${themeNow()} right now)` : null,
     seg([['system', 'Auto'], ['light', '☀️ Light'], ['dark', '🌙 Dark']], prefs.theme, (x) => { prefs.theme = x; savePrefs(); applyTheme(); renderSettings(); })));
   const sw = el('div', { class: 'swatches' });
   Object.entries(ACCENTS).forEach(([key, [name, c1, c2]]) => sw.append(el('button', {

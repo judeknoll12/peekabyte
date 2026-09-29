@@ -19,7 +19,9 @@
     var p = {};
     try { p = JSON.parse(localStorage.getItem('peekabyte') || '{}'); } catch (e) { /* private mode */ }
     var t = p.theme || 'system';
-    if (t === 'system') t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    // (the first iPhone app build keeps a white status bar, so it stays dark there)
+    var oldShell = window.PeekaNative && window.PeekaNative.version === '1.0';
+    if (t === 'system') t = matchMedia('(prefers-color-scheme: dark)').matches || oldShell ? 'dark' : 'light';
     document.documentElement.dataset.theme = t;
     document.documentElement.dataset.accent = p.accent || 'violet';
   })();
