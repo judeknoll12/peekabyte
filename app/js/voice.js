@@ -4,10 +4,16 @@
 //
 // Kokoro runs natively in the iPhone app (sherpa-onnx on the CPU, fast), or in a web worker
 // elsewhere (slower on phones). Either way a line that isn't ready in time is said by the
-// phone's voice instead, so the pet never goes quiet.
+// phone's voice instead, so the pet never goes quiet. In the iPhone app, the app itself plays
+// every line (audio.js explains why); pitch and effects are drawn into the samples first.
 
+import {
+  Offline, RATE, envelope, native, nativeReady, playNative, sayNative, stopNative, trimEnd,
+} from './audio.js';
 import { call, isNative, on } from './native.js';
-import { audioCtx, output } from './sfx.js';
+import { audioCtx } from './sfx.js';
+
+export { nativeVoices as phoneVoices } from './audio.js';
 
 export const PRESETS = [
   { id: 'nemo', name: 'Nemotron-style', desc: 'Natural and warm, in the style of NVIDIA\'s Nemotron voice agent', engine: 'kokoro', voice: 'af_heart', pitch: 0, speed: 1.0, fx: 'none' },
@@ -89,6 +95,15 @@ export class Voice extends EventTarget {
     this.busy = false;
     this.current = null;
     this.nextId = 1;
+    this.last = null;         // how the last line came out: { how, note, at }
+    this.kNapping = false;    // the iPhone app let the voice go to free memory; it comes back when needed
+    if (isNative) {
+      on('tts.unloaded', () => {
+        if (this.kState !== 'ready') return;
+        this.kNapping = true;
+        this.emit();
+      });
+    }
   }
 
   configure(cfg) {
@@ -96,7 +111,10 @@ export class Voice extends EventTarget {
   }
 
   status() {
-    return { engine: this.cfg.engine, kokoro: this.kState, progress: this.kProgress, info: this.kInfo, tooSlow: this.kTooSlow, backend: this.kBackend };
+    return {
+      engine: this.cfg.engine, kokoro: this.kState, progress: this.kProgress, info: this.kInfo, tooSlow: this.kTooSlow,
+      backend: this.kBackend, last: this.last, appPlays: native.ok === true,
+    };
   }
 
   emit() { this.dispatchEvent(new CustomEvent('status', { detail: this.status() })); }
@@ -234,6 +252,10 @@ export class Voice extends EventTarget {
   }
 
   async renderNative(text, speed) {
+    if (this.kNapping) {   // set aside to free memory: load it again first (the phone voice covers meanwhile)
+      await call('tts.load', { model: NATIVE_VOICE_FILES[0].file, voices: NATIVE_VOICE_FILES[1].file });
+      this.kNapping = false;
+    }
     const r = await call('tts.speak', { text, sid: SPEAKER[this.cfg.voice] ?? 3, speed });
     const bin = atob(r.pcm);
     const pcm = new Float32Array(bin.length >> 1);
@@ -289,27 +311,43 @@ export class Voice extends EventTarget {
     this.queue.forEach((q) => q.resolve());
     this.queue = [];
     this.current?.stop?.();
-    window.speechSynthesis?.cancel?.();
+    if (native.ok) stopNative('voice');
+    else window.speechSynthesis?.cancel?.();
   }
 
   async run() {
     if (this.busy) return;
     this.busy = true;
+    await nativeReady;   // does the app play sound itself? (asked once, at startup)
     while (this.queue.length) {
       const item = this.queue.shift();
       const eng = this.cfg.engine;
       try {
         if (eng === 'kokoro' && this.kokoroOn) await this.sayKokoro(item);
-        else if (eng === 'babble' || (eng === 'kokoro' && this.cfg.fallback === 'babble')) await this.sayBabble(item);
-        else await this.saySystem(item);
+        else if (eng === 'babble') await this.sayBabble(item);
+        else await this.sayPhone(item, eng === 'kokoro' ? this.whyNotKokoro() : '');
       } catch (e) {
         console.warn('speak failed', e);
+        this.noteLast('none', String(e?.message || e));
       }
       item.hooks.onLevel?.(0);
       item.hooks.onEnd?.();
       item.resolve();
     }
     this.busy = false;
+  }
+
+  // How the last line actually came out, for the settings page and the report.
+  noteLast(how, note = '') {
+    this.last = { how, note, at: Date.now() };
+    this.emit();
+  }
+
+  whyNotKokoro() {
+    if (this.kTooSlow) return 'the natural voice was too slow, so the phone voice is filling in';
+    if (this.kState === 'loading') return 'the natural voice is still getting ready';
+    if (this.kState === 'error') return `the natural voice failed: ${this.kInfo}`;
+    return "the natural voice isn't downloaded";
   }
 
   // ---- Kokoro ------------------------------------------------------------------------
@@ -319,10 +357,11 @@ export class Voice extends EventTarget {
     const budget = (this.kBackend === 'native' ? 2500 : 4000) + item.text.length * (this.kBackend === 'native' ? 40 : 90);
     const waited = performance.now() - (item.queuedAt || performance.now());
     let audio = null;
+    let why = 'the natural voice took too long';
     try {
       audio = await Promise.race([item.audio, sleep(Math.max(1500, budget - waited)).then(() => null)]);
     } catch (e) {
-      console.warn('voice failed', e);
+      why = `the natural voice failed (${e?.message || e})`;
     }
     if (!audio) {
       this.kMisses++;
@@ -330,55 +369,115 @@ export class Voice extends EventTarget {
         this.kTooSlow = true;
         this.emit();
       }
-      return this.saySystem(item);
+      return this.sayPhone(item, why);
     }
     this.kMisses = 0;
-    if (!(await audioRunning())) return this.saySystem(item);   // no sound output yet: never go silent
-    return this.playPcm(audio.pcm, audio.rate, item.pitchRate || 1, item.hooks);
+    const pcm = await this.shape(audio.pcm, audio.rate, item.pitchRate || 1);
+    const r = await this.playLine(pcm, RATE, item);
+    if (r.ok) return this.noteLast('natural');
+    return this.sayPhone(item, `the natural voice couldn't play (${r.error})`);
   }
 
-  playPcm(pcm, sampleRate, playbackRate, hooks) {
+  // Pitch and effects, drawn into new samples without playing anything.
+  async shape(pcm, rate, playbackRate) {
+    const fx = this.cfg.fx || 'none';
+    if (fx === 'none' && Math.abs(playbackRate - 1) < 0.01 && rate === RATE) return pcm;
+    if (!Offline) return pcm;
+    try {
+      const tail = { echo: 1.2, cave: 1.8 }[fx] || 0.05;
+      const oc = new Offline(1, Math.ceil((pcm.length / rate / playbackRate + tail) * RATE), RATE);
+      const buf = oc.createBuffer(1, pcm.length, rate);
+      buf.getChannelData(0).set(pcm);
+      const src = oc.createBufferSource();
+      src.buffer = buf;
+      src.playbackRate.value = playbackRate;
+      buildEffect(oc, fx, src).connect(oc.destination);
+      src.start();
+      const out = await Promise.race([oc.startRendering(), sleep(3000).then(() => null)]);
+      return out ? trimEnd(out.getChannelData(0), 0.0003) : pcm;
+    } catch (e) {
+      console.warn('voice effects failed', e);
+      return pcm;
+    }
+  }
+
+  // Play finished samples: by the iPhone app when it can, else with Web Audio. The pet's mouth
+  // follows the loudness of the samples. Resolves with { ok, error }.
+  async playLine(pcm, rate, item) {
+    const env = envelope(pcm, rate);
+    let meter = null;
+    const onStart = () => {
+      item.hooks.onStart?.();
+      const t0 = performance.now();
+      meter = setInterval(() => {
+        const i = Math.floor((performance.now() - t0) / 50);
+        item.hooks.onLevel?.(Math.min(1, (env[i] || 0) * 5));
+      }, 60);
+    };
+    const volume = this.cfg.volume ?? 1;
+    let r;
+    if (native.ok) {
+      this.current = { stop: () => stopNative('voice') };
+      r = await playNative(pcm, rate, { channel: 'voice', volume, onStart });
+    } else {
+      r = await this.playWeb(pcm, rate, volume, onStart);
+    }
+    clearInterval(meter);
+    this.current = null;
+    return r;
+  }
+
+  async playWeb(pcm, rate, volume, onStart) {
+    if (!(await audioRunning())) return { ok: false, error: 'sound is blocked until you tap the screen' };
     const c = audioCtx();
-    const buf = c.createBuffer(1, pcm.length, sampleRate);
-    buf.copyToChannel(pcm, 0);
+    const buf = c.createBuffer(1, pcm.length, rate);
+    buf.getChannelData(0).set(pcm);
     const src = c.createBufferSource();
     src.buffer = buf;
-    src.playbackRate.value = playbackRate;
     const gain = c.createGain();
-    gain.gain.value = this.cfg.volume ?? 1;
-    const fxOut = buildEffect(c, this.cfg.fx, src);
-    const an = c.createAnalyser();
-    an.fftSize = 512;
-    fxOut.connect(gain).connect(an).connect(output());
-    return this.watch(src, an, buf.duration / playbackRate, hooks);
-  }
-
-  watch(src, analyser, seconds, hooks) {
+    gain.gain.value = volume;
+    src.connect(gain).connect(c.destination);
     return new Promise((resolve) => {
-      const data = new Float32Array(analyser.fftSize);
       let done = false;
-      const tick = setInterval(() => {
-        analyser.getFloatTimeDomainData(data);
-        let s = 0;
-        for (let i = 0; i < data.length; i++) s += data[i] * data[i];
-        hooks.onLevel?.(Math.min(1, Math.sqrt(s / data.length) * 5));
-      }, 70);
       const finish = () => {
         if (done) return;
         done = true;
-        clearInterval(tick);
         this.current = null;
-        resolve();
+        resolve({ ok: true, error: '' });
       };
       src.onended = finish;
       this.current = { stop: () => { try { src.stop(); } catch { /* already stopped */ } finish(); } };
-      hooks.onStart?.();
+      onStart();
       src.start();
-      setTimeout(finish, seconds * 1000 + 1500);   // safety net
+      setTimeout(finish, buf.duration * 1000 + 1500);   // safety net
     });
   }
 
   // ---- Phone voice ----------------------------------------------------------------------
+  // In the iPhone app: the phone's own speech engine, played by the app (instant, and the
+  // Enhanced / Premium voices from iPhone Settings sound very natural). In a browser: its
+  // speech synthesis.
+  async sayPhone(item, why = '') {
+    if (native.ok) {
+      let level = 0;
+      const pulse = setInterval(() => { level *= 0.7; item.hooks.onLevel?.(level); }, 60);
+      this.current = { stop: () => stopNative('voice') };
+      const r = await sayNative(item.text, {
+        voice: this.cfg.nativeVoice || '',
+        rate: Math.max(0.5, Math.min(2, this.cfg.speed || 1)),
+        pitch: Math.max(0.5, Math.min(2, 2 ** ((this.cfg.pitch || 0) / 12))),
+        volume: this.cfg.volume ?? 1,
+        onStart: () => item.hooks.onStart?.(),
+        onWord: () => { level = 0.7 + Math.random() * 0.3; },   // the mouth moves with each word
+      });
+      clearInterval(pulse);
+      this.current = null;
+      return this.noteLast(r.ok ? 'phone' : 'none', r.ok ? why : r.error);
+    }
+    await this.saySystem(item);
+    return this.noteLast('phone', why);
+  }
+
   saySystem(item) {
     return new Promise((resolve) => {
       if (!window.speechSynthesis) return resolve();
@@ -389,7 +488,7 @@ export class Voice extends EventTarget {
       u.pitch = Math.max(0.1, Math.min(2, 1 + this.cfg.pitch / 12));
       u.rate = Math.max(0.5, Math.min(2, this.cfg.speed));
       u.volume = this.cfg.volume ?? 1;
-      let level = 0, pulse = null;
+      let pulse = null;
       const end = () => {
         clearInterval(pulse);
         this.current = null;
@@ -397,10 +496,7 @@ export class Voice extends EventTarget {
       };
       u.onstart = () => {
         item.hooks.onStart?.();
-        pulse = setInterval(() => {
-          level = 0.25 + Math.random() * 0.6;
-          item.hooks.onLevel?.(level);
-        }, 90);
+        pulse = setInterval(() => item.hooks.onLevel?.(0.25 + Math.random() * 0.6), 90);
       };
       u.onend = end;
       u.onerror = end;
@@ -411,47 +507,61 @@ export class Voice extends EventTarget {
   }
 
   // ---- Babble: chirpy gibberish that follows the syllables ---------------------------------
-  sayBabble(item) {
-    const c = audioCtx();
+  async sayBabble(item) {
+    const pcm = await this.renderBabble(item.text);
+    const r = await this.playLine(pcm, RATE, item);
+    if (r.ok) return this.noteLast('babble');
+    return this.sayPhone(item, `babble couldn't play (${r.error})`);
+  }
+
+  async renderBabble(text) {
     const base = 330 * 2 ** (this.cfg.pitch / 12);
     const speed = this.cfg.speed || 1;
-    const syl = item.text.toLowerCase().match(/[bcdfghjklmnpqrstvwxyz]*[aeiouy]+|[.,!?]/g) || ['a'];
+    const syl = text.toLowerCase().match(/[bcdfghjklmnpqrstvwxyz]*[aeiouy]+|[.,!?]/g) || ['a'];
     const FORMANT = { a: 900, e: 1900, i: 2400, o: 650, u: 450, y: 2100 };
-    let t = c.currentTime + 0.05;
-    const gain = c.createGain();
-    gain.gain.value = 0.9 * (this.cfg.volume ?? 1);
-    const src = c.createGain();
-    const fxOut = buildEffect(c, this.cfg.fx, src);
-    const an = c.createAnalyser();
-    an.fftSize = 512;
-    fxOut.connect(gain).connect(an).connect(output());
-    const question = item.text.trim().endsWith('?');
+    const question = text.trim().endsWith('?');
+    const notes = [];
+    let t = 0.05;
     syl.forEach((s, i) => {
       if (/[.,!?]/.test(s)) { t += 0.12 / speed; return; }
-      const vowel = s.match(/[aeiouy]/)[0];
       const dur = (0.065 + Math.random() * 0.03) / speed;
       let f = base * 2 ** ((Math.random() * 5 - 2) / 12);
       if (question && i > syl.length - 3) f *= 1.25;
-      const o = c.createOscillator(), bp = c.createBiquadFilter(), g = c.createGain();
-      o.type = 'square';
-      o.frequency.setValueAtTime(f, t);
-      o.frequency.exponentialRampToValueAtTime(f * 1.06, t + dur);
-      bp.type = 'bandpass';
-      bp.frequency.value = FORMANT[vowel] || 900;
-      bp.Q.value = 3;
-      g.gain.setValueAtTime(0.0001, t);
-      g.gain.exponentialRampToValueAtTime(0.5, t + 0.008);
-      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-      o.connect(bp).connect(g).connect(src);
-      o.start(t);
-      o.stop(t + dur + 0.02);
+      notes.push({ t, dur, f, formant: FORMANT[s.match(/[aeiouy]/)[0]] || 900 });
       t += dur + 0.018 / speed;
     });
-    const seconds = t - c.currentTime;
-    const fake = { onended: null, start() {}, stop() {} };
-    setTimeout(() => fake.onended?.(), seconds * 1000);
-    return this.watch(fake, an, seconds, item.hooks);
+    const oc = new Offline(1, Math.ceil((t + ({ echo: 1.2, cave: 1.8 }[this.cfg.fx] || 0.1)) * RATE), RATE);
+    const bus = oc.createGain();
+    bus.gain.value = 0.9;
+    buildEffect(oc, this.cfg.fx, bus).connect(oc.destination);
+    for (const n of notes) {
+      const o = oc.createOscillator(), bp = oc.createBiquadFilter(), g = oc.createGain();
+      o.type = 'square';
+      o.frequency.setValueAtTime(n.f, n.t);
+      o.frequency.exponentialRampToValueAtTime(n.f * 1.06, n.t + n.dur);
+      bp.type = 'bandpass';
+      bp.frequency.value = n.formant;
+      bp.Q.value = 3;
+      g.gain.setValueAtTime(0.0001, n.t);
+      g.gain.exponentialRampToValueAtTime(0.5, n.t + 0.008);
+      g.gain.exponentialRampToValueAtTime(0.0001, n.t + n.dur);
+      o.connect(bp).connect(g).connect(bus);
+      o.start(n.t);
+      o.stop(n.t + n.dur + 0.02);
+    }
+    return normalize(trimEnd((await oc.startRendering()).getChannelData(0), 0.0003), 0.7);
   }
+}
+
+// Bring the loudest moment up (or down) to `peak`: synth voices come out quiet otherwise.
+function normalize(pcm, peak) {
+  let max = 0;
+  for (let i = 0; i < pcm.length; i++) max = Math.max(max, Math.abs(pcm[i]));
+  if (max < 1e-4) return pcm;
+  const k = peak / max;
+  const out = new Float32Array(pcm.length);
+  for (let i = 0; i < pcm.length; i++) out[i] = pcm[i] * k;
+  return out;
 }
 
 // ---- Effects --------------------------------------------------------------------------------

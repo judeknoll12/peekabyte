@@ -1,7 +1,15 @@
-// Little synthesized sound effects (no audio files needed).
+// Little synthesized sound effects (no audio files needed). In the iPhone app they're drawn
+// into samples here and played by the app itself (see audio.js); elsewhere by Web Audio.
+
+import { Offline, RATE, native, nativeReady, playNative, stopNative, trimEnd } from './audio.js';
+import { isNative } from './native.js';
 
 let ac = null, master = null, purrNodes = null;
 let volume = 0.6, enabled = true;
+let T = null;   // where tone() and noise() draw right now: { c: context, out: node, t0: start time }
+
+// Web Audio only where the app can't play sound itself (browsers, older app builds).
+export const webAudio = () => !isNative || native.ok === false;
 
 export function audioCtx() {
   if (!ac) {
@@ -20,6 +28,7 @@ export function output() {
 
 // iOS only lets pages make sound after a tap; call this from the first one.
 export function unlock() {
+  if (!webAudio()) return;   // the iPhone app plays sound itself: nothing to unlock
   const c = audioCtx();
   if (c.state !== 'running') c.resume().catch(() => {});   // "suspended", or iOS's "interrupted"
   try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch { /* not supported */ }
@@ -39,7 +48,7 @@ export function setEnabled(on) {
 }
 
 function tone({ f, to = f, dur = 0.15, type = 'sine', vol = 0.3, at = 0, attack = 0.006, vib = 0, curve = 'exp' }) {
-  const c = audioCtx(), t = c.currentTime + at;
+  const { c, out, t0 } = T, t = t0 + at;
   const o = c.createOscillator(), g = c.createGain();
   o.type = type;
   o.frequency.setValueAtTime(f, t);
@@ -58,13 +67,13 @@ function tone({ f, to = f, dur = 0.15, type = 'sine', vol = 0.3, at = 0, attack 
   g.gain.setValueAtTime(0.0001, t);
   g.gain.exponentialRampToValueAtTime(vol, t + attack);
   g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-  o.connect(g).connect(master);
+  o.connect(g).connect(out);
   o.start(t);
   o.stop(t + dur + 0.05);
 }
 
 function noise({ dur = 0.2, vol = 0.25, at = 0, type = 'bandpass', f = 1200, to = f, q = 1 }) {
-  const c = audioCtx(), t = c.currentTime + at;
+  const { c, out, t0 } = T, t = t0 + at;
   const len = Math.max(1, Math.floor(c.sampleRate * dur));
   const buf = c.createBuffer(1, len, c.sampleRate), d = buf.getChannelData(0);
   for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
@@ -76,7 +85,7 @@ function noise({ dur = 0.2, vol = 0.25, at = 0, type = 'bandpass', f = 1200, to 
   if (to !== f) fl.frequency.exponentialRampToValueAtTime(to, t + dur);
   g.gain.setValueAtTime(vol, t);
   g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-  s.connect(fl).connect(g).connect(master);
+  s.connect(fl).connect(g).connect(out);
   s.start(t);
 }
 
@@ -89,7 +98,7 @@ const SOUNDS = {
   whee: () => tone({ f: 400, to: 1300, dur: 0.5, vib: 30, vol: 0.2 }),
   scream: () => tone({ f: 500, to: 900, dur: 0.6, type: 'triangle', vib: 60, vol: 0.2 }),
   love: () => { tone({ f: N(88), dur: 0.3, type: 'triangle', vol: 0.18 }); tone({ f: N(91), dur: 0.45, at: 0.12, type: 'triangle', vol: 0.18 }); },
-  sparkle: () => [96, 100, 103, 108].forEach((n, i) => tone({ f: N(n), dur: 0.12, at: i * 0.05, vol: 0.1 })),
+  sparkle: (a = 0) => [96, 100, 103, 108].forEach((n, i) => tone({ f: N(n), dur: 0.12, at: a + i * 0.05, vol: 0.1 })),
   note: () => { for (let i = 0; i < 3; i++) tone({ f: N(PENTA[(Math.random() * PENTA.length) | 0]), dur: 0.18, at: i * 0.19, type: 'triangle', vol: 0.2 }); },
   bonk: () => { tone({ f: 140, to: 60, dur: 0.18, type: 'square', vol: 0.18 }); noise({ dur: 0.05, f: 2000, vol: 0.2 }); },
   dizzy: () => tone({ f: 700, to: 250, dur: 0.9, vib: 80, vol: 0.15 }),
@@ -111,7 +120,7 @@ const SOUNDS = {
   ouch: () => tone({ f: 300, to: 110, dur: 0.3, type: 'sawtooth', vol: 0.1 }),
   win: () => [72, 76, 79, 84].forEach((n, i) => tone({ f: N(n), dur: i === 3 ? 0.5 : 0.13, at: i * 0.12, type: 'square', vol: 0.08 })),
   lose: () => [67, 66, 65, 64].forEach((n, i) => tone({ f: N(n - 12), dur: i === 3 ? 0.6 : 0.22, at: i * 0.24, type: 'triangle', vol: 0.14, vib: i === 3 ? 6 : 0 })),
-  levelup: () => { [60, 64, 67, 72, 76, 79, 84].forEach((n, i) => tone({ f: N(n + 12), dur: 0.1, at: i * 0.06, type: 'square', vol: 0.07 })); setTimeout(() => SOUNDS.sparkle(), 450); },
+  levelup: () => { [60, 64, 67, 72, 76, 79, 84].forEach((n, i) => tone({ f: N(n + 12), dur: 0.1, at: i * 0.06, type: 'square', vol: 0.07 })); SOUNDS.sparkle(0.45); },
   hatch: () => { for (let i = 0; i < 4; i++) noise({ dur: 0.05, at: i * 0.18, f: 2500, vol: 0.3 }); },
   wobble: () => { tone({ f: 500, dur: 0.05, vol: 0.12 }); tone({ f: 420, dur: 0.05, at: 0.08, vol: 0.12 }); },
   sweep: () => noise({ dur: 0.5, f: 3000, to: 900, q: 0.6, vol: 0.2 }),
@@ -124,11 +133,35 @@ export function play(name) {
   if (!enabled) return;
   if (name === 'purr') return purr(true);
   if (name === 'purr_end') return purr(false);
-  try { SOUNDS[name]?.(); } catch (e) { console.warn('sfx', name, e); }
+  if (!SOUNDS[name]) return;
+  if (webAudio()) {
+    const c = audioCtx();
+    return draw(name, { c, out: master, t0: c.currentTime });
+  }
+  playInApp(name);
+}
+
+function draw(name, target) {
+  T = target;
+  try { SOUNDS[name](); } catch (e) { console.warn('sfx', name, e); } finally { T = null; }
+}
+
+async function playInApp(name) {
+  if (native.ok === null) await nativeReady;
+  if (!native.ok) return play(name);   // an older app build after all: Web Audio
+  try {
+    const oc = new Offline(1, Math.ceil(RATE * 1.6), RATE);
+    draw(name, { c: oc, out: oc.destination, t0: 0 });
+    const pcm = trimEnd((await oc.startRendering()).getChannelData(0));
+    if (pcm.length) playNative(pcm, RATE, { channel: 'sfx', volume });
+  } catch (e) {
+    console.warn('sfx', name, e);
+  }
 }
 
 // A soft continuous purr while you pet the pet.
 export function purr(on) {
+  if (!webAudio()) return purrInApp(on);
   const c = audioCtx();
   if (on && !purrNodes && enabled) {
     const o = c.createOscillator(), lfo = c.createOscillator(), lg = c.createGain(), g = c.createGain(), f = c.createBiquadFilter();
@@ -154,4 +187,42 @@ export function purr(on) {
     o.stop(c.currentTime + 0.3);
     lfo.stop(c.currentTime + 0.3);
   }
+}
+
+let purrPcm = null, purring = false;
+async function purrInApp(on) {
+  if (!on) {
+    if (purring) { purring = false; stopNative('loop'); }
+    return;
+  }
+  if (purring || !enabled) return;
+  purring = true;
+  if (native.ok === null) await nativeReady;
+  if (!native.ok) { purring = false; return purr(true); }
+  try {
+    purrPcm ||= await renderPurr();
+  } catch (e) {
+    purring = false;
+    return console.warn('purr', e);
+  }
+  if (purring) playNative(purrPcm, RATE, { channel: 'loop', volume, loop: true });
+}
+
+// One second of purr that repeats seamlessly: 38 Hz and 22 Hz both fit a whole number of times
+// into a second, and the second second is used so the filter has already settled.
+async function renderPurr() {
+  const oc = new Offline(1, RATE * 2, RATE);
+  const o = oc.createOscillator(), lfo = oc.createOscillator(), lg = oc.createGain(), g = oc.createGain(), f = oc.createBiquadFilter();
+  o.type = 'sawtooth';
+  o.frequency.value = 38;
+  f.type = 'lowpass';
+  f.frequency.value = 260;
+  lfo.frequency.value = 22;
+  lg.gain.value = 0.05;
+  g.gain.value = 0.07;
+  lfo.connect(lg).connect(g.gain);
+  o.connect(f).connect(g).connect(oc.destination);
+  o.start();
+  lfo.start();
+  return (await oc.startRendering()).getChannelData(0).slice(RATE, RATE * 2);
 }

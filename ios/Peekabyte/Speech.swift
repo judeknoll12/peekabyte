@@ -70,7 +70,9 @@ final class Speech {
         config.model.kokoro.lexicon = text(data.appendingPathComponent("lexicon-us-en.txt").path)
         config.model.kokoro.lang = text("en-us")
         config.model.kokoro.length_scale = 1.0
-        config.model.num_threads = Int32(max(2, min(4, ProcessInfo.processInfo.activeProcessorCount - 2)))
+        // iPhones have two fast cores and several slow ones; spreading the work onto the slow
+        // ones makes every step wait for them, so two threads is quicker than four.
+        config.model.num_threads = 2
         config.model.provider = text("cpu")
         config.model.debug = 0
         config.max_num_sentences = 1

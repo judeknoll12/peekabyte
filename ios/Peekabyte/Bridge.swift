@@ -1,5 +1,6 @@
 import UIKit
 import WebKit
+import os
 
 struct BridgeError: LocalizedError {
     let text: String
@@ -18,6 +19,7 @@ final class Bridge: NSObject, WKScriptMessageHandler {
     let llm = LLM()
     let speech = Speech()
     let listen = Listen()
+    let sound = Sound()
     private var wantAwake = false
 
     /// The page picked a look: dark or light, its background color, and whether it follows the phone.
@@ -39,6 +41,7 @@ final class Bridge: NSObject, WKScriptMessageHandler {
         super.init()
         ble.emit = { [weak self] name, data in self?.emit(name, data) }
         listen.emit = { [weak self] name, data in self?.emit(name, data) }
+        sound.emit = { [weak self] name, data in self?.emit(name, data) }
         models.emit = { [weak self] name, data in
             self?.emit(name, data)
             self?.updateIdleTimer()
@@ -80,6 +83,27 @@ final class Bridge: NSObject, WKScriptMessageHandler {
             done(.success(true))
         case "app.openSettings":
             if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+            done(.success(true))
+
+        case "audio.state":
+            done(.success(sound.state()))
+        case "audio.voices":
+            done(.success(["voices": sound.voices()]))
+        case "audio.play":
+            guard let pcm = Data(base64Encoded: str("pcm")) else { return done(.failure(BridgeError("Bad sound"))) }
+            do {
+                let seconds = try sound.play(id: Int(num("id", 0)), pcm: pcm, rate: num("rate", 24000), volume: Float(num("volume", 1)),
+                                             channel: str("channel"), loop: flag("loop"))
+                done(.success(["seconds": seconds]))
+            } catch { done(.failure(error)) }
+        case "audio.say":
+            do {
+                try sound.say(id: Int(num("id", 0)), text: str("text"), voice: str("voice"), rate: Float(num("rate", 1)),
+                              pitch: Float(num("pitch", 1)), volume: Float(num("volume", 1)))
+                done(.success(true))
+            } catch { done(.failure(error)) }
+        case "audio.stop":
+            sound.stop(channel: str("channel"))
             done(.success(true))
 
         case "mic.state":
@@ -199,6 +223,8 @@ final class Bridge: NSObject, WKScriptMessageHandler {
 
     func pageRestarted() {
         listen.cancel()
+        sound.stop(channel: "voice")
+        sound.stop(channel: "loop")
     }
 
     private func updateIdleTimer() {
@@ -209,10 +235,14 @@ final class Bridge: NSObject, WKScriptMessageHandler {
     /// iOS is short on memory. Letting go of the AI now keeps the whole app (and the Bluetooth
     /// link) from being closed; the page reloads the brain the next time it needs it.
     @objc private func memoryWarning() {
-        guard llm.isLoaded else { return }
-        llm.stop()
-        llm.unload()
-        emit("llm.unloaded", ["reason": "memory"])
+        if llm.isLoaded {   // the brain is by far the biggest: it goes first
+            llm.stop()
+            llm.unload()
+            emit("llm.unloaded", ["reason": "memory"])
+        } else if !speech.loadedModel.isEmpty {
+            speech.unload()
+            emit("tts.unloaded", ["reason": "memory"])
+        }
     }
 
     private func appInfo() -> [String: Any] {
@@ -224,6 +254,8 @@ final class Bridge: NSObject, WKScriptMessageHandler {
         return [
             "version": Self.version, "device": device, "ios": UIDevice.current.systemVersion,
             "memory": Double(ProcessInfo.processInfo.physicalMemory), "free": models.freeSpace(),
+            "available": Double(os_proc_available_memory()),
+            "build": Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "",
         ]
     }
 }

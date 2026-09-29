@@ -1,5 +1,6 @@
 // Peekabyte phone app.
 import { call, isNative } from './native.js';
+import { native, nativeState } from './audio.js';
 import { awake, keepAwake } from './awake.js';
 import { Brain, MODELS, fmtSize } from './brain.js';
 import * as connlog from './connlog.js';
@@ -11,7 +12,7 @@ import {
   TRAITS, TRICKS, TRICK_MODE, TRICK_MOVES_MAX, enc, fwAtLeast,
 } from './protocol.js';
 import * as sfx from './sfx.js';
-import { EFFECTS, KOKORO_VOICES, PRESETS, Voice, kokoroDownloadMB, nativeVoiceCheck } from './voice.js';
+import { EFFECTS, KOKORO_VOICES, PRESETS, Voice, kokoroDownloadMB, nativeVoiceCheck, phoneVoices } from './voice.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -32,7 +33,7 @@ function el(tag, attrs = {}, ...kids) {
 const DEFAULTS = {
   owner: '', speak: true, sfx: true, sfxVol: 0.6, brain: '', aiMode: 'special', kokoroOk: false,
   keepAwake: !isNative, lastPet: '', theme: 'system', accent: 'violet', chatty: 'normal', convo: true,
-  voice: { preset: 'nemo', engine: 'kokoro', voice: 'af_heart', pitch: 0, speed: 1, fx: 'none', volume: 1, systemVoice: '' },
+  voice: { preset: 'nemo', engine: 'kokoro', voice: 'af_heart', pitch: 0, speed: 1, fx: 'none', volume: 1, systemVoice: '', nativeVoice: '' },
 };
 let prefs = structuredClone(DEFAULTS);
 try { prefs = { ...prefs, ...JSON.parse(localStorage.getItem('peekabyte') || '{}') }; } catch { /* private mode */ }
@@ -444,7 +445,8 @@ const newFirmware = () => fwAtLeast(S?.v, '1.2');
 const onSchedule = () => !S?.set?.sm;
 function sleepLine() {
   if (!S?.sleep) return '';
-  return S.night && onSchedule() && S.time ? `asleep until ${fmtTime(S.set.w)}` : 'asleep';
+  if (S.night && onSchedule() && S.time) return `asleep until ${fmtTime(S.set.w)}`;
+  return onSchedule() && S.time && newFirmware() ? 'napping' : 'asleep';   // daytime: up again once rested
 }
 
 function renderHeader() {
@@ -1280,14 +1282,17 @@ function awakeNote() {
   return 'Stops the phone locking (which drops the link) while the app is open';
 }
 
-function connReport() {
+function connReport(app) {
   const lk = S?.lk;
   const lines = [
     `Peekabyte connection report, ${new Date().toString()}`,
     `Browser: ${navigator.userAgent}`,
+    app ? `iPhone app ${app.version} (${app.build || '?'}), ${app.device}, iOS ${app.ios}, ${Math.round((app.memory || 0) / 2 ** 30)} GB, ${app.available ? `${Math.round(app.available / 1e6)} MB free for the app` : 'free memory unknown'}` : '',
     `Link: ${link.kind || 'none'}, ${link.state}; screen lock ${awake.supported ? (awake.active ? 'held' : `not held${awake.error ? ` (${awake.error})` : ''}`) : 'not supported'}`,
     S ? `Pet: ${S.name}, firmware ${S.v}, packets ${S.mtu} B, free memory ${S.heap} B` : 'Pet: not connected',
     lk ? `Pet link: ${JSON.stringify(lk)}` : '',
+    `Voice: ${voice.cfg.engine}; natural voice ${voice.kState}${voice.kBackend ? ` (${voice.kBackend})` : ''}${voice.kTooSlow ? ', too slow' : ''}${voice.kInfo ? `, ${voice.kInfo}` : ''}; played by ${native.ok ? 'the app' : 'the page'}; last line: ${voice.last ? `${voice.last.how}${voice.last.note ? ` (${voice.last.note})` : ''}` : 'none yet'}`,
+    ui.audioState ? `Sound: ${ui.audioState.route || '?'} (${ui.audioState.port || '?'}), volume ${Math.round((ui.audioState.volume || 0) * 100)}%${ui.audioState.error ? `, error: ${ui.audioState.error}` : ''}` : '',
     '', 'Recent events:',
     ...connlog.entries().map((it) => `${new Date(it.t).toISOString()}  ${it.text}`),
   ];
@@ -1335,7 +1340,8 @@ function openConnection() {
       el('button', {
         class: 'btn small',
         onclick: async () => {
-          const text = connReport();
+          const app = isNative ? await call('app.info').catch(() => null) : null;
+          const text = connReport(app);
           try { await navigator.clipboard.writeText(text); toast('Report copied'); } catch {
             openSheet((s) => s.append(el('h2', {}, 'Connection report'), el('div', { class: 'sub' }, 'Select and copy this:'),
               el('textarea', { class: 'report', readonly: true }, text)), 'report');
@@ -1472,28 +1478,50 @@ function renderSettings() {
   const k = voice.status();
   if (prefs.voice.engine === 'kokoro') {
     if (!prefs.kokoroOk || k.kokoro === 'off') {
-      vc.append(el('div', { class: 'card', style: 'background:rgba(94,231,255,.07);margin-bottom:10px' },
+      vc.append(el('div', { class: 'callout' },
         el('b', {}, `Natural voices need a one-time download (~${kokoroDownloadMB()} MB).`),
-        el('div', { class: 'muted', style: 'font-size:13px;margin:4px 0 10px' }, 'Kokoro is an open-source voice model that runs on this phone. Until it\'s downloaded, the phone voice fills in.'),
+        el('div', { class: 'note', style: 'margin:4px 0 10px' }, 'Kokoro is an open-source voice model that runs on this phone. Until it\'s downloaded, the phone voice fills in.'),
         el('button', { class: 'btn primary block', onclick: () => { prefs.kokoroOk = true; savePrefs(); voice.loadKokoro(); renderSettings(); } }, '⬇️ Download natural voices')));
     } else {
-      const retry = () => el('button', { class: 'btn small', style: 'margin:0 0 10px', onclick: () => { voice.kTooSlow = false; voice.kMisses = 0; if (voice.kState === 'error') { voice.kState = 'off'; voice.loadKokoro(); } voice.emit(); testVoice(); } }, '🔁 Try again');
+      const retry = () => el('button', { class: 'btn small', style: 'margin-top:8px', onclick: () => { voice.kTooSlow = false; voice.kMisses = 0; if (voice.kState === 'error') { voice.kState = 'off'; voice.loadKokoro(); } voice.emit(); testVoice(); } }, '🔁 Try again');
       if (k.kokoro === 'ready' && k.tooSlow) {
-        vc.append(el('div', { class: 'muted', style: 'font-size:13px;margin-bottom:6px;color:#ffd9a8' },
-          `⚠️ The natural voice was too slow here, so the phone voice is filling in.${isNative && k.backend === 'web' ? ' Reinstall the latest iPhone app for the fast built-in natural voice.' : ''}`), retry());
+        vc.append(el('div', { class: 'callout warn' }, el('div', { class: 'note' },
+          `⚠️ The natural voice was too slow here, so the phone voice is filling in.${isNative && k.backend === 'web' ? ' Reinstall the latest iPhone app for the fast built-in natural voice.' : ''}`), retry()));
       } else if (k.kokoro === 'error') {
-        vc.append(el('div', { class: 'muted', style: 'font-size:13px;margin-bottom:6px;color:#ffc2ca' }, `⚠️ ${k.info || 'The voice stopped working'}. The phone voice is filling in.`), retry());
+        vc.append(el('div', { class: 'callout bad' }, el('div', { class: 'note' }, `⚠️ ${k.info || 'The voice stopped working'}. The phone voice is filling in.`), retry()));
       } else {
-        vc.append(el('div', { class: 'muted', style: 'font-size:13px;margin-bottom:6px' },
+        vc.append(el('div', { class: 'note', style: 'margin-bottom:8px' },
           k.kokoro === 'ready' ? `✅ Natural voices ready (${k.info})` : k.kokoro === 'loading' ? (k.progress >= 0.999 ? 'Warming the voice up…' : `Downloading voices… ${Math.round(k.progress * 100)}%`) : ''));
       }
-      if (k.kokoro === 'loading') vc.append(el('div', { class: 'progress' }, el('i', { style: `width:${Math.round(k.progress * 100)}%` })));
+      if (k.kokoro === 'loading') vc.append(el('div', { class: 'progress', style: 'margin-bottom:10px' }, el('i', { style: `width:${Math.round(k.progress * 100)}%` })));
     }
   }
+  vc.append(voiceHealth(k));
   const custom = (key, val) => { prefs.voice[key] = val; prefs.voice.preset = 'custom'; savePrefs(); applyVoice(); };
   vc.append(setRow('Engine', null, select([['kokoro', 'Natural (Kokoro)'], ['system', 'Phone voice'], ['babble', 'Babble']], prefs.voice.engine, (x) => { custom('engine', x); renderSettings(); })));
   if (prefs.voice.engine === 'kokoro') vc.append(setRow('Voice', null, select(KOKORO_VOICES, prefs.voice.voice, (x) => custom('voice', x))));
-  if (prefs.voice.engine === 'system' && window.speechSynthesis) {
+  if (k.appPlays) {
+    // The phone's own voices, best first. Enhanced and Premium ones sound very natural.
+    if (!ui.phoneVoices) {
+      ui.phoneVoices = [];
+      phoneVoices().then((list) => { ui.phoneVoices = list; if (ui.tab === 'more') renderSettings(); });
+    }
+    const best = ui.audioState?.bestVoice;
+    const opts = [['', `Best on this iPhone${best ? ` (${best})` : ''}`],
+      ...ui.phoneVoices.map((x) => [x.id, `${x.name}${x.quality !== 'default' ? ` · ${x.quality}` : ''}${x.novelty ? ' · silly' : ''}`])];
+    vc.append(setRow(prefs.voice.engine === 'system' ? 'Voice' : 'Phone voice',
+      prefs.voice.engine === 'system' ? null : "Fills in whenever the natural voice isn't ready in time",
+      select(opts, prefs.voice.nativeVoice || '', (x) => {
+        prefs.voice.nativeVoice = x;
+        savePrefs();
+        applyVoice();
+        if (prefs.voice.engine === 'system') testVoice();
+      })));
+    if (ui.audioState?.bestQuality === 'default') {
+      vc.append(el('p', { class: 'note', style: 'margin:2px 0 6px' },
+        'Tip: for a much more natural phone voice, download an Enhanced or Premium voice in iPhone Settings › Accessibility › Spoken Content (Read & Speak on newer iPhones) › Voices › English, then pick it here.'));
+    }
+  } else if (prefs.voice.engine === 'system' && window.speechSynthesis) {
     const vs = speechSynthesis.getVoices().filter((x) => x.lang?.startsWith('en'));
     vc.append(setRow('Voice', null, select([['', 'Default'], ...vs.map((x) => [x.name, x.name])], prefs.voice.systemVoice, (x) => custom('systemVoice', x))));
   }
@@ -1608,6 +1636,42 @@ function renderSettings() {
   $('#views').scrollTop = scroll;
 }
 
+// How the voice is really doing: how the last line came out, and where the sound goes.
+function voiceHealth(k) {
+  if (native.ok && Date.now() - (ui.audioStateAt || 0) > 3000) {
+    ui.audioStateAt = Date.now();
+    nativeState().then((st) => { ui.audioState = st; if (ui.tab === 'more') renderSettings(); });
+  }
+  const last = k.last;
+  const how = { natural: 'the natural voice', phone: 'the phone voice', babble: 'babble' }[last?.how];
+  const box = el('div', { class: `callout ${last?.how === 'none' ? 'bad' : ''}` });
+  box.append(el('b', { style: 'display:block;font-size:14.5px' },
+    !last ? `${S?.name || 'Your pet'} hasn't said anything yet` : last.how === 'none' ? '⚠️ The last line couldn\'t be heard' : `✅ Last line: ${how} · ${ago(last.at)}`));
+  const notes = [];
+  if (last?.note) notes.push(last.how === 'none' ? `${last.note[0].toUpperCase()}${last.note.slice(1)}.` : `Because ${last.note}.`);
+  const a = ui.audioState;
+  if (k.appPlays && a) {
+    const vol = typeof a.volume === 'number' ? Math.round(a.volume * 100) : null;
+    notes.push(`Sound comes out of ${routeName(a)}${vol != null ? ` at ${vol}% volume` : ''}.${vol != null && vol < 15 ? ' That\'s very quiet: turn it up with the side buttons.' : ''}`);
+    if (a.error) notes.push(`The iPhone said: ${a.error}`);
+  } else if (isNative && native.ok === false) {
+    notes.push('Reinstall the latest iPhone app: it plays the voice itself, so it works without a tap and even with the ring switch on silent.');
+  } else if (!isNative) {
+    notes.push('Hearing nothing? Tap the screen once, and check the ring switch and the volume.');
+  }
+  if (notes.length) box.append(el('div', { class: 'note', style: 'margin-top:4px' }, notes.join(' ')));
+  return box;
+}
+
+function routeName(a) {
+  const port = a.port || '';
+  if (port === 'Speaker') return 'the iPhone speaker';
+  if (port === 'Receiver') return 'the earpiece';
+  if (port === 'Headphones') return 'headphones';
+  if (/Bluetooth|AirPlay|CarAudio|USB|HDMI/i.test(port)) return a.route || 'a connected speaker';
+  return a.route || 'the phone';
+}
+
 function testVoice() {
   sfx.unlock();
   const name = S?.name || 'Peekabyte';
@@ -1659,10 +1723,17 @@ function init() {
   updateConnectButton();
   // Keep the sound engine running: iOS parks it ("interrupted") after calls, other apps'
   // audio or a trip to the background, and only a tap or a return to the app revives it.
-  document.addEventListener('pointerdown', () => { sfx.unlock(); chatter.lastUser = Date.now(); });
+  // Browsers only let a page make sound after a real tap, which on iPhone means touchend or
+  // click (pointerdown doesn't count). The iPhone app plays sound itself and needs none of this.
+  for (const ev of ['pointerdown', 'touchend', 'click', 'keydown']) document.addEventListener(ev, () => sfx.unlock(), { capture: true, passive: true });
+  document.addEventListener('pointerdown', () => { chatter.lastUser = Date.now(); });
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) sfx.unlock();
-    else if (ui.convo || listener.active) endConversation();
+    if (!document.hidden) {
+      sfx.unlock();
+      ui.phoneVoices = null;   // a voice may have been downloaded in iPhone Settings meanwhile
+    } else if (ui.convo || listener.active) {
+      endConversation();
+    }
   });
   window.speechSynthesis?.addEventListener?.('voiceschanged', () => { if (ui.tab === 'more') renderSettings(); });
 
@@ -1684,8 +1755,10 @@ function init() {
     $('#bleHint').classList.add('hidden');
     $('#noBle').classList.remove('hidden');
   }
+  if (Link.bridgeAvailable()) {   // testing on this computer
+    window.peekabyteDebug = { chatter, ui, prefs, listener, voice, sfx, chatUp, speakUp, talkButton, get S() { return S; } };
+  }
   if (Link.bridgeAvailable() && !isNative) {
-    window.peekabyteDebug = { chatter, ui, prefs, listener, voice, chatUp, speakUp, talkButton };   // for testing on this computer
     $('#btnBridge').classList.remove('hidden');
     $('#btnBridge').onclick = () => { sfx.unlock(); link.connectBridge(); };
     link.connectBridge();

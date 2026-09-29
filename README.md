@@ -82,6 +82,8 @@ Twelve built‑in tricks (spin, jump, wink, eye roll, dance, play dead, peekaboo
 
 - **Nemotron‑style**: a natural, warm voice in the style of NVIDIA's Nemotron voice‑agent demos, made with the open‑source **Kokoro** model running on the phone (a one‑time ~90 MB download). NVIDIA's own Nemotron speech model needs a desktop GPU, so it can't run on a phone.
 - More Kokoro voices (Sunny, Buddy, Squeaky, Robo), two **babble** voices (instant, Animal Crossing style) and the phone's built‑in voice.
+- In the iPhone app, the **app itself plays every sound** (not the web page inside it), so the pet talks without a tap first, with the ring switch on silent, and after calls, Siri or the microphone. The **phone voice** there is Apple's own speech engine: download an *Enhanced* or *Premium* voice in iPhone Settings › Accessibility › Spoken Content (Read & Speak on newer iPhones) › Voices › English, then pick it in Settings → Voice → Phone voice. It's instant and fills in whenever the natural voice isn't ready in time.
+- Settings → Voice shows how the last line was actually said (natural voice, phone voice, or why neither), where the sound goes and how loud the phone is.
 
 **Talking.** Tap the microphone and speak. In the iPhone app your words are recognized by the iPhone's own speech recognition, on the phone itself when it supports that (iPhones from the XS on do, for English); in a browser, by the browser's speech recognition. While you talk the pet looks up at you and perks up with your voice. It speaks up when it wants something (again every few minutes until it gets it) and starts little conversations on its own; **Chattiness** sets how often.
 
