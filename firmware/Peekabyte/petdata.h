@@ -80,11 +80,14 @@ struct PetSave {
 struct Settings {
   uint16_t magic;
   uint8_t contrast, flip, autoRotate, driver, bubbles, sens, sleepDim;
+  uint8_t manualSleep;          // 1 = sleeps only when put to bed; 0 = follows bedtime / waketime
   uint16_t bedtime, waketime;   // minutes after midnight
   uint8_t calibrated;
   float calib[9];
   char appUrl[100];
 };
+// Saved as raw bytes: new fields may only take over padding (manualSleep did), never grow it.
+static_assert(sizeof(Settings) == 152 && offsetof(Settings, bedtime) == 10, "Settings layout changed");
 
 struct DiaryEntry {
   uint32_t age;   // pet age in seconds when it happened

@@ -17,7 +17,13 @@ final class Bridge: NSObject, WKScriptMessageHandler {
     let models = ModelStore()
     let llm = LLM()
     let speech = Speech()
+    let listen = Listen()
     private var wantAwake = false
+
+    /// The page picked a look: dark or light, its background color, and whether it follows the phone.
+    var onTheme: ((_ dark: Bool, _ background: UIColor, _ followsPhone: Bool) -> Void)?
+    /// The page has drawn itself: time to lift the splash screen.
+    var onReady: (() -> Void)?
 
     static let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
 
@@ -32,6 +38,7 @@ final class Bridge: NSObject, WKScriptMessageHandler {
     override init() {
         super.init()
         ble.emit = { [weak self] name, data in self?.emit(name, data) }
+        listen.emit = { [weak self] name, data in self?.emit(name, data) }
         models.emit = { [weak self] name, data in
             self?.emit(name, data)
             self?.updateIdleTimer()
@@ -63,6 +70,32 @@ final class Bridge: NSObject, WKScriptMessageHandler {
         case "app.keepAwake":
             wantAwake = flag("on")
             updateIdleTimer()
+            done(.success(true))
+        case "app.theme":
+            let dark = flag("dark")
+            onTheme?(dark, UIColor(hex: str("bg")) ?? (dark ? .black : .white), flag("follow"))
+            done(.success(true))
+        case "app.ready":
+            onReady?()
+            done(.success(true))
+        case "app.openSettings":
+            if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+            done(.success(true))
+
+        case "mic.state":
+            done(.success(listen.state))
+        case "mic.start":
+            let hints = (a["hints"] as? [Any] ?? []).compactMap { $0 as? String }
+            listen.start(hints: hints, silence: num("silenceMs", 1300) / 1000, wait: num("waitMs", 8000) / 1000,
+                         longest: num("maxMs", 20000) / 1000, done: done)
+        case "mic.stop":
+            listen.stop()
+            done(.success(true))
+        case "mic.cancel":
+            listen.cancel()
+            done(.success(true))
+        case "mic.release":
+            listen.release()
             done(.success(true))
 
         case "ble.state":
@@ -164,7 +197,9 @@ final class Bridge: NSObject, WKScriptMessageHandler {
 
     // MARK: housekeeping
 
-    func pageRestarted() {}
+    func pageRestarted() {
+        listen.cancel()
+    }
 
     private func updateIdleTimer() {
         // Stay awake while the page asks for it, and during big downloads.
@@ -190,5 +225,16 @@ final class Bridge: NSObject, WKScriptMessageHandler {
             "version": Self.version, "device": device, "ios": UIDevice.current.systemVersion,
             "memory": Double(ProcessInfo.processInfo.physicalMemory), "free": models.freeSpace(),
         ]
+    }
+}
+
+extension UIColor {
+    /// "#rrggbb" from the page.
+    convenience init?(hex: String) {
+        var s = hex.trimmingCharacters(in: .whitespaces)
+        if s.hasPrefix("#") { s.removeFirst() }
+        guard s.count == 6, let v = UInt32(s, radix: 16) else { return nil }
+        self.init(red: CGFloat((v >> 16) & 0xFF) / 255, green: CGFloat((v >> 8) & 0xFF) / 255,
+                  blue: CGFloat(v & 0xFF) / 255, alpha: 1)
     }
 }

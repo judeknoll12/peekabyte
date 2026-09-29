@@ -1,14 +1,14 @@
 // Peekabyte phone app.
-import { isNative } from './native.js';
+import { call, isNative } from './native.js';
 import { awake, keepAwake } from './awake.js';
 import { Brain, MODELS, fmtSize } from './brain.js';
 import * as connlog from './connlog.js';
 import { Link } from './link.js';
-import { Mirror, TINTS } from './mirror.js';
-import { line } from './phrases.js';
+import { Listener } from './listen.js';
+import { line, starter } from './phrases.js';
 import {
-  BUILTIN_TRICKS, CALIB, CARE, CUSTOM_TRICKS, DIARY, EMO, FOODS, GAME, LOOK_FIELDS, MOVES, SET, STAGES, SYS,
-  TRAITS, TRICKS, TRICK_MODE, TRICK_MOVES_MAX, enc,
+  BUILTIN_TRICKS, CALIB, CARE, CUSTOM_TRICKS, DIARY, EMO, FOODS, GAME, HELLO, LOOK_FIELDS, MOVES, SET, STAGES, SYS,
+  TRAITS, TRICKS, TRICK_MODE, TRICK_MOVES_MAX, enc, fwAtLeast,
 } from './protocol.js';
 import * as sfx from './sfx.js';
 import { EFFECTS, KOKORO_VOICES, PRESETS, Voice, kokoroDownloadMB, nativeVoiceCheck } from './voice.js';
@@ -30,8 +30,8 @@ function el(tag, attrs = {}, ...kids) {
 
 // ---------------------------------------------------------------- preferences ----
 const DEFAULTS = {
-  owner: '', speak: true, sfx: true, sfxVol: 0.6, tint: 'ice', brain: '', aiMode: 'special', kokoroOk: false,
-  keepAwake: !isNative, lastPet: '',
+  owner: '', speak: true, sfx: true, sfxVol: 0.6, brain: '', aiMode: 'special', kokoroOk: false,
+  keepAwake: !isNative, lastPet: '', theme: 'system', accent: 'violet', chatty: 'normal', convo: true,
   voice: { preset: 'nemo', engine: 'kokoro', voice: 'af_heart', pitch: 0, speed: 1, fx: 'none', volume: 1, systemVoice: '' },
 };
 let prefs = structuredClone(DEFAULTS);
@@ -43,13 +43,37 @@ function savePrefs() { try { localStorage.setItem('peekabyte', JSON.stringify(pr
 const link = new Link();
 const voice = new Voice();
 const brain = new Brain();
-let mirror;
+const listener = new Listener();
 let S = null;                 // latest state from the pet
-let lastFrameAt = 0;
 const ui = {
   tab: 'home', train: -1, look: null, lookCat: 0, lookDirty: false, lookRandom: false, hatchThenStyle: false,
   sheet: null, gameSheet: false, lastEgg: false, calibStep: 0, diary: null,
+  said: null,                 // the last thing said: { who: 'pet' | 'me', text, at }
+  talk: 'idle',               // the talk card: idle | listening | thinking | speaking
+  convo: false,               // talking back and forth with the microphone
+  heard: '',                  // words heard so far while listening
 };
+
+// ---------------------------------------------------------------- theme ----
+// Light or dark (or whatever the phone uses), plus an accent color. The iPhone app gets told
+// too, so its status bar and backgrounds match.
+const ACCENTS = {
+  violet: ['Violet', '#6c4df5', '#9d80ff'], ocean: ['Ocean', '#0b8fd8', '#38c6f8'], mint: ['Mint', '#0e9f6e', '#34d399'],
+  peach: ['Peach', '#ea6a10', '#fb9a4b'], rose: ['Rose', '#e0357f', '#f779b0'],
+};
+const systemDark = matchMedia('(prefers-color-scheme: dark)');
+const themeNow = () => (prefs.theme === 'system' ? (systemDark.matches ? 'dark' : 'light') : prefs.theme);
+
+function applyTheme() {
+  const t = themeNow();
+  const root = document.documentElement;
+  root.dataset.theme = t;
+  root.dataset.accent = ACCENTS[prefs.accent] ? prefs.accent : 'violet';
+  const bg = t === 'dark' ? '#0d0e1a' : '#f4f2fb';
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', bg);
+  if (isNative) call('app.theme', { dark: t === 'dark', bg, follow: prefs.theme === 'system' }).catch(() => {});
+}
+systemDark.addEventListener?.('change', () => { if (prefs.theme === 'system') applyTheme(); });
 
 // ---------------------------------------------------------------- helpers ----
 function toast(msg, ms = 2200) {
@@ -83,18 +107,18 @@ const MOOD = {
 };
 const WANTS = {
   food: ['🍎', (n) => `${n} is hungry!`, 'Feed', 'feed'],
-  sleep: ['😴', (n) => `${n} is sleepy. Turn the lights off?`, 'Lights off', 'lights'],
-  love: ['💗', (n) => `${n} wants some love. Stroke the screen!`, 'Tickle', 'tickle'],
+  sleep: ['😴', (n) => `${n} is sleepy. Put it to bed?`, 'Sleep', 'sleep'],
+  love: ['💗', (n) => `${n} wants some love. Hold the Pet button, or rock it gently.`, 'Pet', 'pet'],
   play: ['🎮', (n) => `${n} is bored. Play a game!`, 'Play', 'play'],
   medicine: ['🤒', (n) => `${n} is sick and needs medicine.`, 'Medicine', 'medicine'],
-  clean: ['🧹', () => 'Crumbs everywhere! Clean up, or tilt the pet to shake them off.', 'Clean', 'clean'],
+  clean: ['🧽', () => 'Crumbs everywhere! Clean up, or tilt the pet to shake them off.', 'Clean', 'clean'],
 };
 const NEEDS = [
-  { name: 'Food', ico: '🍎', c1: '#ffa45c', c2: '#ffd84a' },
-  { name: 'Energy', ico: '⚡', c1: '#5ee7ff', c2: '#6dffb0' },
-  { name: 'Fun', ico: '🎈', c1: '#b58cff', c2: '#ff7ac6' },
-  { name: 'Love', ico: '💗', c1: '#ff7ac6', c2: '#ff9aa9' },
-  { name: 'Health', ico: '🩺', c1: '#6dffb0', c2: '#5ee7ff' },
+  { name: 'Food', ico: '🍎', c: 'var(--food)' },
+  { name: 'Energy', ico: '⚡', c: 'var(--energy)' },
+  { name: 'Fun', ico: '🎈', c: 'var(--fun)' },
+  { name: 'Love', ico: '💗', c: 'var(--love)' },
+  { name: 'Health', ico: '🩺', c: 'var(--health)' },
 ];
 
 function trickName(id) {
@@ -226,12 +250,10 @@ function updateConnectButton() {
 link.addEventListener('status', (e) => {
   const { state, name, why, dropped, downFor, replaced } = e.detail;
   renderConn();
-  $('#led').classList.toggle('on', state === 'connected');
   if (state === 'connected') {
     showMain(true);
     $('#connectStatus').textContent = '';
-    send(enc.hello(location.protocol === 'https:' ? location.origin + location.pathname : ''));
-    lastFrameAt = performance.now();
+    send(enc.hello(location.protocol === 'https:' ? location.origin + location.pathname : '', HELLO.NO_MIRROR));
     if (link.kind === 'ble') {
       keepAwake(prefs.keepAwake);
       if (name && name !== prefs.lastPet) { prefs.lastPet = name; savePrefs(); updateConnectButton(); }
@@ -304,7 +326,7 @@ async function checkForUpdate() {
 
 function quietMoment() {
   const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName);
-  return !ui.sheet && !ui.lookDirty && !S?.game && !typing && !voice.busy && ui.train < 0;
+  return !ui.sheet && !ui.lookDirty && !S?.game && !typing && !voice.busy && ui.train < 0 && ui.talk === 'idle' && !ui.convo;
 }
 
 function applyUpdate() {
@@ -361,29 +383,12 @@ function startGuard() {
   }, 'crash');
 }
 
-link.addEventListener('binary', (e) => {
-  if (mirror.apply(e.detail)) {
-    lastFrameAt = performance.now();
-    if (!document.hidden) send(enc.frameReq(false));
-  } else {
-    send(enc.frameReq(true));
-  }
-});
-
 link.addEventListener('json', (e) => {
   const m = e.detail;
   if (m.t === 'state') onState(m);
   else if (m.t === 'ev') onEvent(m);
   else if (m.t === 'diary') { ui.diary = m.items; if (ui.sheet === 'diary') openDiary(); }
 });
-
-setInterval(() => {   // mirror watchdog: ask for a keyframe if frames stopped coming
-  if (link.connected && !document.hidden && performance.now() - lastFrameAt > 2500) {
-    lastFrameAt = performance.now();
-    send(enc.frameReq(true));
-  }
-}, 1000);
-document.addEventListener('visibilitychange', () => { if (!document.hidden && link.connected) send(enc.frameReq(true)); });
 
 async function connectBle() {
   sfx.unlock();
@@ -399,7 +404,9 @@ async function connectBle() {
 function onState(m) {
   const first = !S;
   const wasEgg = S && S.stage === 0;
+  const wasAwake = S && !S.sleep;
   S = m;
+  if (wasAwake && m.sleep && (ui.convo || listener.active)) endConversation();
   link.setMtu(m.mtu || 23);
   trackLink(m.lk);
   renderConn();
@@ -423,13 +430,23 @@ function renderAll() {
   if (ui.sheet === 'conn') openConnection();
 }
 
+function fmtTime(min) {
+  return new Date(2000, 0, 1, Math.floor(min / 60), min % 60).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+const newFirmware = () => fwAtLeast(S?.v, '1.2');
+const onSchedule = () => !S?.set?.sm;
+function sleepLine() {
+  if (!S?.sleep) return '';
+  return S.night && onSchedule() && S.time ? `asleep until ${fmtTime(S.set.w)}` : 'asleep';
+}
+
 function renderHeader() {
   $('#petName').textContent = S.name;
   $('#stageBadge').textContent = S.hatching ? 'Hatching' : STAGES[S.stage];
   const mood = MOOD[S.mood] || ['🙂', S.mood];
-  $('#petSub').textContent = S.stage === 0 ? 'Waiting to hatch…' : `${fmtAge(S.age)} · ${mood[1]}`;
-  $('#moodText').textContent = `${mood[0]} ${S.sleep ? 'Zzz' : ''}`;
-  $('#footText').textContent = S.sleep ? 'Shh… sleeping' : S.dark ? 'Lights are off' : 'Tap & drag the screen to pet';
+  $('#moodFace').textContent = S.stage === 0 ? '🥚' : mood[0];
+  const zzz = sleepLine();
+  $('#petSub').textContent = S.stage === 0 ? 'Waiting to hatch…' : zzz ? `${zzz[0].toUpperCase()}${zzz.slice(1)}` : `${fmtAge(S.age)} · ${mood[1]}`;
 }
 
 function renderHome() {
@@ -439,32 +456,40 @@ function renderHome() {
     if (document.activeElement !== $('#hatchName')) $('#hatchName').value = S.name;
   }
   ui.lastEgg = egg;
-  $('#needs').classList.toggle('hidden', egg);
+  $('#speech').classList.toggle('hidden', egg);
+  $('#needsCard').classList.toggle('hidden', egg);
   $('#actions').classList.toggle('hidden', egg);
-  // needs
+  // needs, as rings
   const needs = $('#needs');
   if (!needs.children.length) {
-    NEEDS.forEach((n) => needs.append(el('div', { class: 'need', style: `--c1:${n.c1};--c2:${n.c2}` },
-      el('div', { class: 'ico' }, n.ico), el('div', { class: 'bar' }, el('div', { class: 'fill' })), el('div', { class: 'lbl' }, n.name))));
+    NEEDS.forEach((n) => needs.append(el('div', { class: 'need', style: `--c:${n.c}` },
+      el('div', {
+        class: 'ring',
+        html: '<svg viewBox="0 0 56 56"><circle class="track" cx="28" cy="28" r="24"/><circle class="val" cx="28" cy="28" r="24" stroke-dasharray="150.8" stroke-dashoffset="150.8"/></svg>',
+      }, el('span', { class: 'ico' }, n.ico)),
+      el('div', { class: 'lbl' }, n.name), el('div', { class: 'pct' }, ''))));
   }
   S.n.forEach((v, i) => {
     const d = needs.children[i];
-    d.querySelector('.fill').style.width = `${v}%`;
+    d.querySelector('.val').style.strokeDashoffset = String(150.8 * (1 - Math.max(0, Math.min(100, v)) / 100));
+    d.querySelector('.pct').textContent = `${v}%`;
     d.classList.toggle('low', v < 25);
     d.title = `${NEEDS[i].name}: ${v}%`;
   });
   // want
   const w = WANTS[S.want];
-  $('#want').classList.toggle('hidden', !w || egg || !!S.sleep && S.want !== 'medicine');
+  const showWant = !!w && !egg && !(S.sleep && S.want !== 'medicine');
+  $('#want').classList.toggle('hidden', !showWant);
   if (w) {
     $('#wantIcon').textContent = w[0];
     $('#wantText').textContent = w[1](S.name);
     $('#wantDo').textContent = w[2];
     $('#wantDo').onclick = () => doAction(w[3]);
   }
-  $$('.act').forEach((b) => b.classList.toggle('glow', !!w && b.dataset.act === w[3]));
-  $('#lightsIcon').textContent = S.dark ? '💡' : '🌙';
-  $('#lightsText').textContent = S.dark ? 'Lights on' : 'Lights off';
+  $$('.act').forEach((b) => b.classList.toggle('glow', showWant && b.dataset.act === w[3]));
+  $('#sleepIcon').textContent = S.sleep ? '☀️' : '🌙';
+  $('#sleepText').textContent = S.sleep ? 'Wake up' : 'Sleep';
+  renderTalkCard();
   // about
   $('#aboutName').textContent = S.name;
   const traits = $('#traits');
@@ -486,19 +511,100 @@ function doAction(a) {
   switch (a) {
     case 'feed': return openFeed();
     case 'play': return openPlay();
+    case 'pet': return petBurst();
     case 'tickle': send(enc.care(CARE.TICKLE)); sfx.play('giggle'); return;
     case 'clean':
       if (!S.crumbs) return toast('Already spotless ✨');
       send(enc.care(CARE.CLEAN));
       return;
-    case 'lights': send(enc.care(S.dark ? CARE.LIGHTS_ON : CARE.LIGHTS_OFF)); return;
+    case 'sleep': return toggleSleep();
     case 'medicine':
       if (!S.sick) return confirmSheet('Not sick', `${S.name} isn't sick. Give medicine anyway?`, 'Give it', () => send(enc.care(CARE.MEDICINE)));
       send(enc.care(CARE.MEDICINE));
       return;
   }
 }
-$$('.act').forEach((b) => b.addEventListener('click', () => doAction(b.dataset.act)));
+$$('.act').forEach((b) => { if (b.dataset.act !== 'pet') b.addEventListener('click', () => doAction(b.dataset.act)); });
+
+function toggleSleep() {
+  if (!S) return;
+  if (S.sleep) return send(enc.care(newFirmware() ? CARE.WAKE : CARE.LIGHTS_ON));
+  if (S.game) return toast('Finish the game first');
+  endConversation();
+  send(enc.care(newFirmware() ? CARE.SLEEP : CARE.LIGHTS_OFF));
+}
+
+// ---------------------------------------------------------------- petting ----
+// Hold the Pet button to stroke the pet (its eyes follow your finger across the button);
+// wiggle your finger fast and it tickles.
+const PET_W = 128, PET_H = 64;
+function initPetButton() {
+  const b = $('.act[data-act="pet"]');
+  let down = false, x = 64, y = 24, lastMove = 0, lastSend = 0, drift = null, t = 0;
+  const where = (e) => {
+    const r = b.getBoundingClientRect();
+    return [Math.round(8 + ((e.clientX - r.left) / r.width) * (PET_W - 16)), Math.round(10 + ((e.clientY - r.top) / r.height) * (PET_H - 24))];
+  };
+  const start = (e) => {
+    e.preventDefault();
+    sfx.unlock();
+    if (!S || S.stage === 0) return toast('Hatch your egg first! 🥚');
+    down = true;
+    try { b.setPointerCapture(e.pointerId); } catch { /* not a live pointer */ }
+    b.classList.add('held');
+    $('#petText').textContent = 'Petting…';
+    [x, y] = where(e);
+    send(enc.pet(0, x, y));
+    if (!S.sleep) sfx.play('purr');
+    lastMove = performance.now();
+    // A resting finger still strokes: drift slowly so the pet keeps feeling it.
+    drift = setInterval(() => {
+      if (performance.now() - lastMove < 300) return;
+      t += 0.4;
+      send(enc.pet(1, Math.round(x + Math.sin(t) * 4), Math.round(y + Math.cos(t) * 2)));
+    }, 250);
+  };
+  const move = (e) => {
+    if (!down) return;
+    const now = performance.now();
+    lastMove = now;
+    if (now - lastSend < 60) return;
+    lastSend = now;
+    [x, y] = where(e);
+    send(enc.pet(1, x, y));
+  };
+  const end = () => {
+    if (!down) return;
+    down = false;
+    clearInterval(drift);
+    b.classList.remove('held');
+    $('#petText').textContent = 'Pet';
+    send(enc.pet(2, x, y));
+    if (!S?.sleep) sfx.play('purr_end');
+  };
+  b.addEventListener('pointerdown', start);
+  b.addEventListener('pointermove', move);
+  ['pointerup', 'pointercancel', 'lostpointercapture'].forEach((ev) => b.addEventListener(ev, end));
+  b.addEventListener('contextmenu', (e) => e.preventDefault());
+}
+
+// A few seconds of gentle petting, for the "wants love" button.
+function petBurst() {
+  if (!S || S.stage === 0) return;
+  let t = 0;
+  send(enc.pet(0, 64, 24));
+  sfx.play('purr');
+  const iv = setInterval(() => {
+    t += 1;
+    if (t > 14) {
+      clearInterval(iv);
+      send(enc.pet(2, 64, 24));
+      sfx.play('purr_end');
+      return;
+    }
+    send(enc.pet(1, Math.round(64 + Math.sin(t / 2) * 10), 24));
+  }, 220);
+}
 
 function openFeed() {
   openSheet((c) => {
@@ -638,9 +744,15 @@ function onEvent(m) {
 }
 
 async function onSay(m) {
+  if (m.i === 'muse') return;              // the app picks its own moments to chat (see chatter below)
+  if (ui.talk === 'listening') return;     // don't talk over you (or into the microphone)
+  const want = INTENT_WANT[m.i];
+  if (want) {                              // it wants something: say so, but not again right away
+    if (Date.now() - (chatter.wantSaid[want] || 0) < chattiness().want * 60000 * 0.8) return;
+    chatter.wantSaid[want] = Date.now();
+  }
   const ctx = ctxFor(m);
   const useAi = brain.ready && (prefs.aiMode === 'all' || (prefs.aiMode === 'special' && SPECIAL.has(m.i)));
-  if (m.i === 'muse' && !brain.ready && Math.random() < 0.6) return;   // the phrase book shouldn't ramble
   let res;
   if (useAi) {
     showThinking(true);
@@ -652,25 +764,231 @@ async function onSay(m) {
   if (res?.text) petSays(res.text, res.emotion);
 }
 
-let bubbleTimer = null;
-function showBubble(text) {
-  const b = $('#bubble');
-  b.textContent = text;
-  b.classList.add('show');
-  clearTimeout(bubbleTimer);
-  bubbleTimer = setTimeout(() => b.classList.remove('show'), Math.max(2500, text.length * 75));
-}
-
 function petSays(text, emotion, { chat = true } = {}) {
-  showBubble(text);
+  said('pet', text);
+  chatter.lastLine = Date.now();
   if (chat) addMsg('pet', text);
   if (emotion && EMO[emotion]) send(enc.emote(EMO[emotion], 25));
   if (S?.set?.bu) send(enc.say(text, true));
   if (!prefs.speak) return Promise.resolve();
+  if (ui.talk === 'idle') setTalk('speaking');
   return voice.speak(text, {
     onLevel: (l) => send(enc.talk(l * 255)),
     onEnd: () => send(enc.talk(0)),
-  });
+  }).finally(() => { if (ui.talk === 'speaking' && !voice.busy) setTalk('idle'); });
+}
+
+// ---------------------------------------------------------------- the talk card ----
+// The big card on Home: what was said last, and the microphone button.
+function said(who, text) {
+  ui.said = { who, text, at: Date.now() };
+  renderTalkCard();
+}
+function setTalk(st) {
+  ui.talk = st;
+  renderTalkCard();
+}
+function ago(t) {
+  const s = (Date.now() - t) / 1000;
+  if (s < 45) return 'just now';
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  return new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+function renderTalkCard() {
+  if (!S) return;
+  const name = S.name, st = ui.talk, s = ui.said;
+  const who = $('#saidWho'), q = $('#said'), title = $('#talkTitle'), sub = $('#talkSub'), mic = $('#talkBtn');
+  $('#saidWave').classList.toggle('hidden', st !== 'speaking');
+  mic.classList.toggle('live', st === 'listening');
+  mic.classList.toggle('off', !listener.available && st === 'idle');
+  $('#micBtn').classList.toggle('live', st === 'listening');
+  if (st === 'listening') {
+    who.textContent = 'You';
+    q.className = 'quote me';
+    q.textContent = ui.heard ? `“${ui.heard}”` : 'Listening…';
+    title.textContent = 'Listening…';
+    sub.textContent = 'Tap when you’re done, or just stop talking';
+    return;
+  }
+  if (st === 'thinking') {
+    who.textContent = name;
+    q.className = 'quote soft';
+    if (!q.querySelector('.dots')) q.innerHTML = '<span class="dots"><i></i><i></i><i></i></span>';
+  } else if (s) {
+    who.textContent = s.who === 'me' ? `You · ${ago(s.at)}` : `${name} · ${st === 'speaking' ? 'talking' : ago(s.at)}`;
+    q.className = s.who === 'me' ? 'quote me' : 'quote';
+    q.textContent = s.who === 'me' ? `“${s.text}”` : s.text;
+  } else {
+    who.textContent = name;
+    q.className = 'quote soft';
+    q.textContent = S.sleep ? 'Zzz… 💤' : `Say hi to ${name}!`;
+  }
+  const asked = s?.who === 'pet' && /\?\s*$/.test(s.text) && Date.now() - s.at < 90000;
+  if (ui.convo) {
+    title.textContent = st === 'thinking' ? `${name} is thinking…` : st === 'speaking' ? `${name} is answering` : 'Talking together';
+    sub.textContent = 'Tap to hang up';
+  } else if (S.sleep) {
+    title.textContent = `${name} is ${sleepLine()}`;
+    sub.textContent = 'Tap to wake it up and talk';
+  } else if (!listener.available) {
+    title.textContent = `Talk to ${name}`;
+    sub.textContent = listener.why || 'Type in the Talk tab';
+  } else {
+    title.textContent = asked ? 'Tap to answer' : 'Tap to talk';
+    sub.textContent = `Say anything, ${name} answers out loud`;
+  }
+}
+
+// ---------------------------------------------------------------- talking with the microphone ----
+// Tap, talk, and the pet answers out loud. With "keep the conversation going" on it then
+// listens for your reply, back and forth, until you stop talking or tap to hang up.
+async function talkButton() {
+  sfx.unlock();
+  if (ui.talk === 'listening') return listener.stop();   // done with this turn
+  if (ui.convo) {                                         // hang up
+    endConversation();
+    voice.stop();
+    return;
+  }
+  if (!S || !link.connected) return toast('Connect to your pet first');
+  if (S.stage === 0) return toast('Hatch your egg first! 🥚');
+  await listener.ready;
+  if (!listener.available) return toast(listener.why, 4000);
+  if (S.sleep) {
+    toggleSleep();
+    toast(`Waking ${S.name} up…`);
+    await new Promise((r) => setTimeout(r, 2600));   // let it wake up and say so first
+    await voice.idle();
+  }
+  voice.stop();
+  ui.convo = prefs.convo;
+  listenTurn();
+}
+
+async function listenTurn() {
+  ui.heard = '';
+  setTalk('listening');
+  send(enc.listen(1));
+  let lastLevel = 0;
+  const hints = [S?.name, prefs.owner, ...TRICKS.map((t) => t.name), ...(S?.ct || []).filter(Boolean).map((c) => c[0]), ...FOODS.map((f) => f.name)];
+  try {
+    const text = await listener.listen({
+      hints,
+      onPartial: (t) => {
+        ui.heard = t;
+        renderTalkCard();
+        if (ui.tab === 'chat') $('#chatInput').value = t;
+      },
+      onLevel: (l) => {
+        $('#talkBtn').style.setProperty('--lvl', l.toFixed(2));
+        const now = performance.now();
+        if (now - lastLevel > 150) { lastLevel = now; send(enc.listen(1 + l * 254)); }
+      },
+    });
+    send(enc.listen(0));
+    $('#talkBtn').style.setProperty('--lvl', '0');
+    if (ui.tab === 'chat') $('#chatInput').value = '';
+    if (ui.talk !== 'listening') return;     // hung up meanwhile
+    if (!text) return endConversation();    // nothing said: that's the end of the chat
+    setTalk('idle');
+    await handleUserText(text, { spoken: true });
+    if (ui.convo && !document.hidden && link.connected && S && !S.sleep) listenTurn();
+    else endConversation();
+  } catch (e) {
+    send(enc.listen(0));
+    endConversation();
+    if (/denied|not allowed|turned off|permission|authoriz/i.test(e.message)) openMicHelp(e.message);
+    else toast(e.message, 3500);
+  }
+}
+
+function endConversation() {
+  ui.convo = false;
+  ui.heard = '';
+  if (listener.active) listener.cancel();
+  if (ui.talk === 'listening' || ui.talk === 'thinking') setTalk('idle');
+  else renderTalkCard();
+  clearTimeout(endConversation.later);
+  endConversation.later = setTimeout(() => { if (!ui.convo && !listener.active) listener.release(); }, 30000);
+}
+
+function openMicHelp(why) {
+  openSheet((c) => {
+    c.append(el('h2', {}, '🎙️ The microphone is off'),
+      el('div', { class: 'sub' }, isNative
+        ? `To talk with ${S?.name || 'your pet'}, Peekabyte needs the microphone and speech recognition. Open Settings › Peekabyte and switch both on.`
+        : `This page isn't allowed to use the microphone (${why}). Allow it in the browser's site settings, then try again.`),
+      el('div', { class: 'row' },
+        el('button', { class: 'btn grow', onclick: closeSheet }, 'Not now'),
+        isNative ? el('button', { class: 'btn primary grow', onclick: () => { closeSheet(); listener.openSettings(); } }, 'Open Settings') : null));
+  }, 'mic');
+}
+
+// ---------------------------------------------------------------- the pet talks on its own ----
+// It speaks up when it wants something (and again every few minutes until it gets it), and
+// now and then it simply feels like chatting. Settings › Talking › Chattiness sets how often.
+const CHATTY = {
+  quiet: { want: 12, idle: [25, 45], text: 'Speaks up when it needs something, and chats once in a while' },
+  normal: { want: 5, idle: [6, 12], text: 'Asks for what it needs and chats every few minutes' },
+  chatty: { want: 2.5, idle: [2, 5], text: 'A real chatterbox' },
+};
+const chattiness = () => CHATTY[prefs.chatty] || CHATTY.normal;
+const WANT_INTENT = { food: 'hungry', sleep: 'sleepy', love: 'lonely', play: 'bored', medicine: 'sick', clean: 'messy' };
+const INTENT_WANT = Object.fromEntries(Object.entries(WANT_INTENT).map(([w, i]) => [i, w]));
+const chatter = { lastLine: 0, lastUser: Date.now(), wantSaid: {}, nextIdle: 0, busy: false };
+const between = ([a, b]) => a + Math.random() * (b - a);
+
+function quietEnough() {
+  return S && S.stage > 0 && !S.sleep && !S.hatching && !S.game && link.connected && !document.hidden
+    && ui.talk === 'idle' && !ui.convo && !listener.active && !voice.busy && !ui.sheet && ui.train < 0
+    && !['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName);
+}
+
+function chatterTick() {
+  const cfg = chattiness();
+  const now = Date.now();
+  if (!chatter.nextIdle) chatter.nextIdle = now + between(cfg.idle) * 60000;
+  if (chatter.busy || !quietEnough() || now - chatter.lastLine < 15000 || now - chatter.lastUser < 8000) return;
+  const w = S.want;
+  if (w && WANT_INTENT[w] && now - (chatter.wantSaid[w] || 0) > cfg.want * 60000) {
+    chatter.wantSaid[w] = now;
+    return speakUp(WANT_INTENT[w]);
+  }
+  if (now >= chatter.nextIdle && now - chatter.lastUser > 60000) {
+    chatter.nextIdle = now + between(cfg.idle) * 60000;
+    return chatUp();
+  }
+}
+
+async function speakUp(intent) {
+  chatter.busy = true;
+  try {
+    const ctx = ctxFor();
+    const res = brain.ready && prefs.aiMode === 'all' ? await brain.react(intent, ctx) : line(intent, ctx);
+    if (res?.text && quietEnough()) {
+      if (brain.ready) brain.remember(res.text, res.emotion);
+      await petSays(res.text, res.emotion);
+    }
+  } finally {
+    chatter.busy = false;
+  }
+}
+
+async function chatUp() {
+  chatter.busy = true;
+  try {
+    const ctx = ctxFor();
+    const idea = starter(ctx);
+    let res = brain.ready ? await brain.starter(idea.idea, ctx) : null;
+    if (!res) {
+      res = idea;
+      brain.remember(idea.text, idea.emotion);
+    }
+    if (res?.text && quietEnough()) await petSays(res.text, res.emotion);
+  } finally {
+    chatter.busy = false;
+  }
 }
 
 // ---------------------------------------------------------------- chat ----
@@ -700,24 +1018,41 @@ function trickFromText(t) {
   return -1;
 }
 
-$('#composer').addEventListener('submit', async (e) => {
+// Everything you say to the pet, typed or spoken. Resolves once it has answered out loud.
+async function handleUserText(text, { spoken = false } = {}) {
+  if (!text || !S) return;
+  chatter.lastUser = Date.now();
+  addMsg(spoken ? 'me spoken' : 'me', text);
+  said('me', text);
+  if (S.stage === 0) return petSays('*wiggle wiggle*', null);
+  if (/\b(go to (sleep|bed)|good ?night|bed ?time|time for bed|time to sleep|nap time)\b/i.test(text) && !S.sleep) {
+    ui.convo = false;
+    toggleSleep();   // it says goodnight by itself
+    return;
+  }
+  const trick = trickFromText(text);
+  if (trick >= 0) send(enc.trick(TRICK_MODE.COMMAND, trick));
+  if (trick >= 0 && !brain.ready) {   // the phrase book just plays along
+    const ok = ['Okay, watch this!', `One ${trickName(trick)}, coming up!`, 'Ooh, I\'ll try!'];
+    return petSays(ok[Math.floor(Math.random() * ok.length)], 'happy');
+  }
+  setTalk('thinking');
+  if (trick < 0) send(enc.emote(EMO.thinking, 50));
+  showThinking(true);
+  const res = await brain.chat(trick >= 0 ? `${text} (you are about to try the "${trickName(trick)}" trick)` : text, ctxFor());
+  showThinking(false);
+  if (ui.talk === 'thinking') setTalk('idle');
+  return petSays(res.text, res.emotion);
+}
+
+$('#composer').addEventListener('submit', (e) => {
   e.preventDefault();
   sfx.unlock();
   const input = $('#chatInput');
   const text = input.value.trim();
   if (!text || !S) return;
   input.value = '';
-  addMsg('me', text);
-  const trick = trickFromText(text);
-  if (trick >= 0 && S.stage > 0) send(enc.trick(TRICK_MODE.COMMAND, trick));
-  if (trick >= 0 && !brain.ready) {   // the phrase book just plays along
-    const ok = ['Okay, watch this!', `One ${trickName(trick)}, coming up!`, 'Ooh, I\'ll try!'];
-    return petSays(ok[Math.floor(Math.random() * ok.length)], 'happy');
-  }
-  showThinking(true);
-  const res = await brain.chat(trick >= 0 ? `${text} (you are about to try the "${trickName(trick)}" trick)` : text, ctxFor());
-  showThinking(false);
-  petSays(res.text, res.emotion);
+  handleUserText(text);
 });
 
 function renderSuggest() {
@@ -1037,15 +1372,81 @@ function applyVoice() {
   if (prefs.voice.engine === 'kokoro' && prefs.kokoroOk && voice.kState === 'off' && !ui.aiPaused) voice.loadKokoro();
 }
 
+function seg(options, value, onChange) {
+  const s = el('div', { class: 'seg', role: 'radiogroup' });
+  options.forEach(([v, label]) => {
+    const on = String(v) === String(value);
+    s.append(el('button', { class: on ? 'on' : '', role: 'radio', 'aria-checked': on ? 'true' : 'false', onclick: () => onChange(v) }, label));
+  });
+  return s;
+}
+function stackRow(title, sub, control) {
+  return el('div', { class: 'set stack' }, el('div', { class: 'l' }, el('b', {}, title), sub ? el('span', {}, sub) : null), control);
+}
+function timeInput(min, onChange) {
+  const t = el('input', { type: 'time', value: hhmm(min) });
+  t.onchange = () => {
+    if (!t.value) return;
+    const [h, m] = t.value.split(':').map(Number);
+    onChange(h * 60 + m);
+  };
+  return t;
+}
+
 function renderSettings() {
   const v = $('#moreView');
   const scroll = $('#views').scrollTop;
   v.innerHTML = '';
 
+  // --- Appearance
+  const ap = el('div', { class: 'card' }, el('h3', {}, '🎨 Appearance'));
+  ap.append(stackRow('Theme', prefs.theme === 'system' ? `Follows your phone (${themeNow()} right now)` : null,
+    seg([['system', 'Auto'], ['light', '☀️ Light'], ['dark', '🌙 Dark']], prefs.theme, (x) => { prefs.theme = x; savePrefs(); applyTheme(); renderSettings(); })));
+  const sw = el('div', { class: 'swatches' });
+  Object.entries(ACCENTS).forEach(([key, [name, c1, c2]]) => sw.append(el('button', {
+    class: `swatch ${prefs.accent === key ? 'on' : ''}`, title: name, 'aria-label': name, style: `--s1:${c1};--s2:${c2}`,
+    onclick: () => { prefs.accent = key; savePrefs(); applyTheme(); renderSettings(); },
+  })));
+  ap.append(stackRow('Color', ACCENTS[prefs.accent]?.[0] || 'Violet', sw));
+  v.append(ap);
+
+  // --- Sleep
+  if (S) {
+    const sl = el('div', { class: 'card' }, el('h3', {}, '🌙 Sleep'));
+    const fw = newFirmware();
+    const auto = !fw || onSchedule();
+    sl.append(setRow('Sleep on a schedule',
+      auto ? `Goes to bed at ${fmtTime(S.set.b)} and wakes up at ${fmtTime(S.set.w)} all by itself` : `Off: ${S.name} sleeps when you put it to bed and stays asleep until you wake it`,
+      fw ? toggle(auto, (on) => send(enc.set(SET.MANUALSLEEP, on ? 0 : 1))) : null));
+    if (auto) {
+      sl.append(setRow('Bedtime', null, timeInput(S.set.b, (m) => send(enc.set(SET.BEDTIME, m)))),
+        setRow('Wake-up time', null, timeInput(S.set.w, (m) => send(enc.set(SET.WAKETIME, m)))));
+    }
+    sl.append(el('button', { class: 'btn block tinted', style: 'margin-top:10px', onclick: () => { toggleSleep(); } },
+      S.sleep ? `☀️ Wake ${S.name} up` : `🌙 Put ${S.name} to bed now`));
+    const notes = [];
+    if (!fw) notes.push(`Your pet has firmware ${S.v}. Update it to 1.2 to sleep and wake exactly on schedule; until then bedtime only makes it sleepy.`);
+    else if (!S.time) notes.push('The pet learns the time from this phone whenever they connect.');
+    if (notes.length) sl.append(el('p', { class: 'note', style: 'margin:10px 0 0' }, notes.join(' ')));
+    v.append(sl);
+  }
+
+  // --- Talking
+  const tk = el('div', { class: 'card' }, el('h3', {}, '💬 Talking'));
+  tk.append(stackRow('Chattiness', chattiness().text,
+    seg([['quiet', 'Quiet'], ['normal', 'Normal'], ['chatty', 'Chatty']], prefs.chatty, (x) => { prefs.chatty = x; chatter.nextIdle = 0; savePrefs(); renderSettings(); })));
+  tk.append(setRow('Speak out loud', 'Your pet talks through the phone speaker', toggle(prefs.speak, (on) => { prefs.speak = on; savePrefs(); if (!on) voice.stop(); })));
+  tk.append(setRow('Keep the conversation going', 'After it answers, the microphone listens for your reply', toggle(prefs.convo, (on) => { prefs.convo = on; savePrefs(); })));
+  const micNote = listener.kind === 'native'
+    ? (listener.onDevice ? 'Your voice is turned into words right on this iPhone' : "Uses Apple's speech recognition")
+    : listener.kind === 'web' ? "Uses this browser's speech recognition" : listener.why;
+  tk.append(setRow('Microphone', micNote, listener.available
+    ? el('button', { class: 'btn small', onclick: () => { showTab('home'); talkButton(); } }, '🎙️ Try it') : null));
+  v.append(tk);
+
   // --- Voice
   const vc = el('div', { class: 'card' }, el('h3', {}, '🗣️ Voice'));
-  vc.append(setRow('Speak out loud', 'Your pet talks through the phone speaker', toggle(prefs.speak, (on) => { prefs.speak = on; savePrefs(); if (!on) voice.stop(); })));
-  const presets = el('div', { class: 'presets', style: 'margin:12px 0' });
+  const presets = el('div', { class: 'presets', style: 'margin:0 0 12px' });
   PRESETS.forEach((p) => presets.append(el('button', {
     class: `preset ${prefs.voice.preset === p.id ? 'on' : ''}`,
     onclick: () => {
@@ -1153,11 +1554,6 @@ function renderSettings() {
       el('div', { style: 'display:flex;flex-direction:column;gap:6px' },
         select(TRAITS.map((t, i) => [i, `${t.emoji} ${t.name}`]), tr[0], (x) => { if (Number(x) !== tr[1]) send(enc.traits(Number(x), tr[1])); }),
         select(TRAITS.map((t, i) => [i, `${t.emoji} ${t.name}`]), tr[1], (x) => { if (Number(x) !== tr[0]) send(enc.traits(tr[0], Number(x))); }))));
-    const bed = el('input', { type: 'time', value: hhmm(S.set.b) });
-    bed.onchange = () => { const [h, m] = bed.value.split(':').map(Number); send(enc.set(SET.BEDTIME, h * 60 + m)); };
-    const wake = el('input', { type: 'time', value: hhmm(S.set.w) });
-    wake.onchange = () => { const [h, m] = wake.value.split(':').map(Number); send(enc.set(SET.WAKETIME, h * 60 + m)); };
-    pc.append(setRow('Bedtime', 'It gets sleepy after this', bed), setRow('Wake-up time', null, wake));
     pc.append(el('button', { class: 'btn block', style: 'margin-top:10px', onclick: () => { send(enc.diary()); ui.diary = null; openDiary(); } }, '📔 Diary'));
   }
   v.append(pc);
@@ -1167,13 +1563,6 @@ function renderSettings() {
     const dc = el('div', { class: 'card' }, el('h3', {}, '💡 Screen & motion'));
     const br = slider(5, 255, 5, S.set.c, (x, done) => { if (done) send(enc.set(SET.CONTRAST, x)); }, (x) => `${Math.round((x / 255) * 100)}%`);
     dc.append(el('div', { class: 'set', style: 'display:block' }, el('div', { class: 'row' }, el('b', { class: 'grow' }, 'Brightness'), br.out), br.r));
-    const tints = el('div', { class: 'tints' });
-    Object.entries(TINTS).forEach(([key, t]) => tints.append(el('button', {
-      class: `tint ${prefs.tint === key ? 'on' : ''}`, title: t.name,
-      style: `background:linear-gradient(180deg, ${t.top} 50%, ${t.bottom} 50%)`,
-      onclick: () => { prefs.tint = key; savePrefs(); applyTint(); renderSettings(); },
-    })));
-    dc.append(setRow('Screen color in the app', 'Match your OLED module', tints));
     dc.append(setRow('Speech bubbles on the pet', 'Show what it says on its own screen', toggle(!!S.set.bu, (on) => send(enc.set(SET.BUBBLES, on ? 1 : 0)))));
     dc.append(setRow('Dim while sleeping', null, toggle(!!S.set.sd, (on) => send(enc.set(SET.SLEEPDIM, on ? 1 : 0)))));
     dc.append(setRow('Auto-rotate', 'Flip the picture when held upside down', toggle(!!S.set.r, (on) => send(enc.set(SET.AUTOROTATE, on ? 1 : 0)))));
@@ -1204,7 +1593,9 @@ function renderSettings() {
       el('button', { class: 'btn small danger', onclick: () => confirmSheet('Factory reset?', 'Erases the pet AND all settings on the device.', 'Erase everything', () => send(enc.sys(SYS.FACTORY)), true) }, '🧨 Factory reset')));
   }
   dv.append(el('p', { class: 'muted', style: 'font-size:12px;line-height:1.6;margin:14px 0 0' },
-    'Peekabyte runs open-source models in your browser with Transformers.js: SmolLM2 (Hugging Face), Gemma 3 (Google), Qwen3 (Alibaba), Nemotron 3 Nano (NVIDIA) and the Kokoro voice model. Nothing is sent to a server.'));
+    isNative
+      ? 'Peekabyte runs open-source models on this iPhone: Qwen3 (Alibaba) and Gemma 3 (Google) with llama.cpp, and the Kokoro voice with sherpa-onnx. Your voice is turned into words by the iPhone\'s own speech recognition. Nothing is sent to our servers (there aren\'t any).'
+      : 'Peekabyte runs open-source models in your browser with Transformers.js: SmolLM2 (Hugging Face), Gemma 3 (Google), Qwen3 (Alibaba), Nemotron 3 Nano (NVIDIA) and the Kokoro voice model. Nothing is sent to a server.'));
   v.append(dv);
   $('#views').scrollTop = scroll;
 }
@@ -1245,33 +1636,10 @@ function openCalib() {
   draw();
 }
 
-function applyTint() {
-  mirror.setTint(prefs.tint);
-  const t = TINTS[prefs.tint] || TINTS.ice;
-  document.documentElement.style.setProperty('--tint', `${t.bottom}99`);
-}
-
-// ---------------------------------------------------------------- mirror + petting ----
-function initMirror() {
-  mirror = new Mirror($('#screen'), {
-    onPet: (phase, x, y) => {
-      sfx.unlock();
-      if (!S || S.stage === 0) return;
-      send(enc.pet(phase, x, y));
-      if (phase === 0) sfx.play('purr');
-      if (phase === 2) sfx.play('purr_end');
-    },
-    onLook: (x, y) => {
-      if (x == null) return send(enc.lookRelease());
-      send(enc.look(Math.round(((x - 64) / 64) * 100), Math.round(((y - 32) / 32) * 100)));
-    },
-  });
-  applyTint();
-}
-
 // ---------------------------------------------------------------- start ----
 function init() {
-  initMirror();
+  applyTheme();
+  initPetButton();
   startGuard();
   startUpdates();
   sfx.setVolume(prefs.sfxVol);
@@ -1283,9 +1651,19 @@ function init() {
   updateConnectButton();
   // Keep the sound engine running: iOS parks it ("interrupted") after calls, other apps'
   // audio or a trip to the background, and only a tap or a return to the app revives it.
-  document.addEventListener('pointerdown', () => sfx.unlock());
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) sfx.unlock(); });
+  document.addEventListener('pointerdown', () => { sfx.unlock(); chatter.lastUser = Date.now(); });
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) sfx.unlock();
+    else if (ui.convo || listener.active) endConversation();
+  });
   window.speechSynthesis?.addEventListener?.('voiceschanged', () => { if (ui.tab === 'more') renderSettings(); });
+
+  // Talking: the microphone buttons, and the pet speaking up by itself.
+  $('#talkBtn').onclick = talkButton;
+  $('#micBtn').onclick = talkButton;
+  listener.ready.then(() => { renderTalkCard(); if (ui.tab === 'more') renderSettings(); });
+  setInterval(chatterTick, 4000);
+  setInterval(() => { if (ui.tab === 'home' && ui.talk === 'idle') renderTalkCard(); }, 30000);
 
   $('#thisUrl').textContent = location.href.replace(/#.*$/, '');
   $('#copyUrl').onclick = async () => {
@@ -1299,6 +1677,7 @@ function init() {
     $('#noBle').classList.remove('hidden');
   }
   if (Link.bridgeAvailable() && !isNative) {
+    window.peekabyteDebug = { chatter, ui, prefs, listener, voice, chatUp, speakUp, talkButton };   // for testing on this computer
     $('#btnBridge').classList.remove('hidden');
     $('#btnBridge').onclick = () => { sfx.unlock(); link.connectBridge(); };
     link.connectBridge();
@@ -1306,6 +1685,8 @@ function init() {
     link.autoBle();
   }
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+  // The iPhone app shows its own splash screen until the page has drawn itself.
+  if (isNative) requestAnimationFrame(() => requestAnimationFrame(() => call('app.ready').catch(() => {})));
 }
 
 init();

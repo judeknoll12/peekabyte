@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- The Peekabyte app icon: the pet (a pebble with a little screen for a face) peeking
+       up at you. Render with tools/render_art.py. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#9D80FF"/>
+      <stop offset="0.55" stop-color="#6C4DF5"/>
+      <stop offset="1" stop-color="#4A2ED4"/>
+    </linearGradient>
+    <radialGradient id="shine" cx="0.26" cy="0.1" r="0.8">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.34"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="shell" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#E8E1FF"/>
+    </linearGradient>
+    <linearGradient id="screen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1B1E47"/>
+      <stop offset="1" stop-color="#0A0B1B"/>
+    </linearGradient>
+    <filter id="drop" x="-30%" y="-30%" width="160%" height="170%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="30" result="blur"/>
+      <feOffset in="blur" dy="34" result="off"/>
+      <feFlood flood-color="#23126E" flood-opacity="0.45" result="color"/>
+      <feComposite in="color" in2="off" operator="in" result="shadow"/>
+      <feMerge><feMergeNode in="shadow"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="20" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+  <rect width="1024" height="1024" fill="url(#shine)"/>
+
+  <g filter="url(#drop)">
+    <rect x="172" y="196" width="680" height="640" rx="236" fill="url(#shell)"/>
+  </g>
+  <rect x="258" y="304" width="508" height="380" rx="132" fill="url(#screen)"/>
+
+  <g filter="url(#glow)" fill="#8EEBFF">
+    <ellipse cx="412" cy="492" rx="78" ry="94"/>
+    <ellipse cx="612" cy="492" rx="78" ry="94"/>
+  </g>
+  <g fill="#F5FEFF">
+    <ellipse cx="412" cy="492" rx="78" ry="94"/>
+    <ellipse cx="612" cy="492" rx="78" ry="94"/>
+  </g>
+  <g fill="#10122A">
+    <circle cx="437" cy="468" r="41"/>
+    <circle cx="637" cy="468" r="41"/>
+  </g>
+  <g fill="#FFFFFF">
+    <circle cx="450" cy="454" r="13"/>
+    <circle cx="650" cy="454" r="13"/>
+  </g>
+
+  <ellipse cx="314" cy="744" rx="48" ry="27" fill="#FF8FC2"/>
+  <ellipse cx="710" cy="744" rx="48" ry="27" fill="#FF8FC2"/>
+</svg>

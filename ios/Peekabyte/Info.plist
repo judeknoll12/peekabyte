@@ -26,6 +26,10 @@
 	<false/>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Peekabyte talks to your pet over Bluetooth.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Peekabyte listens when you tap the microphone, so you can talk to your pet.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>What you say to your pet is turned into words, on this iPhone when it can, so your pet can answer.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>bluetooth-central</string>
@@ -38,6 +42,8 @@
 	<dict>
 		<key>UIColorName</key>
 		<string>LaunchBackground</string>
+		<key>UIImageName</key>
+		<string>LaunchLogo</string>
 	</dict>
 	<key>UIRequiredDeviceCapabilities</key>
 	<array>
@@ -48,10 +54,6 @@
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
 	</array>
-	<key>UIStatusBarStyle</key>
-	<string>UIStatusBarStyleLightContent</string>
-	<key>UIViewControllerBasedStatusBarAppearance</key>
-	<false/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 </dict>

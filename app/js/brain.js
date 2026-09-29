@@ -328,6 +328,22 @@ export class Brain extends EventTarget {
     this.history.push({ role: 'assistant', content: `[${out.emotion || 'happy'}] ${out.text}` });
     return out;
   }
+
+  // The pet starts a conversation by itself. Resolves to { text, emotion } or null.
+  async starter(idea, ctx) {
+    const res = await this.ask([
+      { role: 'system', content: this.persona(ctx) },
+      { role: 'user', content: `(Nobody has said anything for a while and you feel like chatting: ${idea}.) Say one short line to ${ctx.owner}.` },
+    ], 36);
+    if (res) this.remember(res.text, res.emotion);
+    return res;
+  }
+
+  // Something the pet said on its own, so the AI knows what a reply refers to.
+  remember(text, emotion) {
+    this.history.push({ role: 'assistant', content: `[${emotion || 'happy'}] ${text}` });
+    this.history = this.history.slice(-6);
+  }
 }
 
 // Clean up whatever the model said into one tidy line plus an optional mood.
@@ -353,7 +369,7 @@ export function parse(raw) {
 
 function fallbackChat(text, ctx) {
   const q = text.toLowerCase();
-  if (/how are you|how do you feel|you ok/.test(q)) return `I feel ${ctx.mood}!`;
+  if (/how are you|how do you feel|you ok/.test(q)) return `I'm ${ctx.mood}! Thanks for asking.`;
   if (/love you|like you/.test(q)) return 'I love you too!';
   if (/name/.test(q)) return `I'm ${ctx.name}!`;
   if (/hungry|food|eat/.test(q)) return `I love ${ctx.fav}. Just saying!`;

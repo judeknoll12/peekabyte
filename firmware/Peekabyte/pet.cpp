@@ -33,9 +33,21 @@ static int minuteOfDay() {
   return local / 60;
 }
 static bool inWindow(int m, int from, int to) { return from <= to ? (m >= from && m < to) : (m >= from || m < to); }
+
+// The sleep schedule: asleep from bedtime to wake-up time, unless the owner runs bedtime by hand.
+static bool scheduled() { return !SET.manualSleep; }
 static bool bedtimeNow() {
   int m = minuteOfDay();
-  return m >= 0 && inWindow(m, SET.bedtime, SET.waketime);
+  return scheduled() && m >= 0 && inWindow(m, SET.bedtime, SET.waketime);
+}
+static int minutesToBedtime() {   // -1 without a clock or a schedule
+  int m = minuteOfDay();
+  if (!scheduled() || m < 0) return -1;
+  return ((SET.bedtime - m) % 1440 + 1440) % 1440;
+}
+static bool nightish() {   // for picking words: "goodnight" rather than "nap"
+  int m = minuteOfDay();
+  return bedtimeNow() || (m >= 0 && (m >= 19 * 60 || m < 5 * 60));
 }
 
 // ---- Moment-to-moment state -------------------------------------------------------------
@@ -81,6 +93,14 @@ static uint8_t playing = 0;   // game being played
 constexpr uint32_t BLIP_MS = 30000;
 static uint32_t phoneLeftAt = 0;   // when the Bluetooth link last dropped (0 = not since boot)
 static uint32_t byeAt = 0;         // wave goodbye at this time unless the phone is back
+// Sleep
+static bool nightSleep = false;    // this is the night's sleep (ends at wake-up time), not a nap
+static uint32_t sleptAt = 0;
+static uint32_t stayUp = 0;        // woken during the scheduled night: back to sleep 10 min after the last fuss
+static bool windDownSaid = false;  // "almost bedtime!" said already
+// The owner is talking to the pet through the phone's microphone.
+static float listen = 0;           // their voice level 0..1
+static uint32_t listenAt = 0;
 
 // eating / medicine
 static int8_t eatFood = -1;   // -1 none, 0..11 food, 100 pill, 101 treat
@@ -152,7 +172,7 @@ static const char *soloLine(const char *intent) {
     {"burp", "*burp*"}, {"trick_fail", "Oops!"}, {"learned", "I did it!"}, {"stage_up", "I grew!"},
     {"cured", "All better!"}, {"clean_thanks", "Sparkly!"}, {"hatched", "Hello world!"}, {"picked_up", "Hi!"},
     {"rocked", "So cozy..."}, {"medicine", "Blegh!"}, {"not_sleepy", "Not tired!"}, {"tickle", "Hehe!"},
-    {"new_name", "Love it!"}, {"new_look", "Lookin' good"}, {"record", "New record!"},
+    {"new_name", "Love it!"}, {"new_look", "Lookin' good"}, {"record", "New record!"}, {"bedtime", "Bedtime soon"},
   };
   for (auto &m : MAP)
     if (!strcmp(m[0], intent)) return m[1];
@@ -191,14 +211,26 @@ static void addNeeds(float h, float e, float f, float l) {
   markDirty();
 }
 
+static bool listening() { return listenAt && millis() - listenAt < 2500 && !P.asleep; }
+
+// Anything the owner does. Awake in the scheduled night, the pet stays up while there's fuss.
+static void poke() {
+  if (stayUp) stayUp = millis() | 1;
+}
+
 static void fallAsleep() {
   if (P.asleep) return;
   act::stop();
   P.asleep = 1;
   zzzT = 0;
   dreamT = 25 + rnd() * 40;
+  int toBed = minutesToBedtime();
+  nightSleep = bedtimeNow() || (toBed >= 0 && toBed <= 60) || (!scheduled() && P.lightsOff);
+  sleptAt = millis();
+  stayUp = 0;
+  listenAt = 0;
   fx::hush();
-  say(bedtimeNow() ? "goodnight" : "nap", nullptr, true);
+  say(nightish() ? "goodnight" : "nap", nullptr, true);
   sfx("yawn");
   markDirty();
 }
@@ -207,16 +239,24 @@ static void wakeUp(bool gently) {
   if (!P.asleep) return;
   P.asleep = 0;
   lightsDarkT = 0;
+  if (bedtimeNow()) stayUp = millis() | 1;   // up in the night: it goes back to sleep once things calm down
   if (!gently && P.energy < 60) {
     grumpyT = 45;
     P.fun = clamp100(P.fun - 5);
     say("grumpy", "woken up", true);
   } else {
-    say(bedtimeNow() || minuteOfDay() < 0 ? "wake" : "morning", nullptr, true);
+    int m = minuteOfDay();
+    say(m >= 4 * 60 && m < 12 * 60 && !bedtimeNow() ? "morning" : "wake", nullptr, true);
     joyT = 1.0f;
   }
   surpriseT = 0.4f;
   markDirty();
+}
+
+// A new schedule shouldn't knock the pet out mid-play: it gets the usual 10 minutes.
+static void scheduleChanged() {
+  if (!P.asleep && bedtimeNow()) stayUp = millis() | 1;
+  windDownSaid = false;
 }
 
 // ---- New pets ------------------------------------------------------------------------------------
@@ -521,6 +561,7 @@ static void motion(uint8_t e) {
     return;
   }
   if (mode != M_LIFE || games::active()) return;
+  poke();
   bool brave = hasTrait(TR_BRAVE), shy = hasTrait(TR_SHY);
   switch (e) {
     case imu::EV_TAP:
@@ -730,6 +771,11 @@ void tick() {
   bool asleep = P.asleep;
   float hr = asleep ? -3.0f : -9.0f, er = asleep ? (P.lightsOff ? 24.0f : 16.0f) : -7.0f;
   float fr = asleep ? 0 : -8.0f, lr = asleep ? -1.0f : -6.0f;
+  if (!asleep && scheduled() && timeKnown) {
+    // Paced so a pet on a schedule makes it from wake-up time to bedtime.
+    int day = ((SET.bedtime - SET.waketime) % 1440 + 1440) % 1440;
+    if (day >= 240) er = -min(7.0f, 88.0f * 60 / day);
+  }
   if (hasTrait(TR_FOODIE)) hr *= 1.35f;
   if (hasTrait(TR_SLEEPY) && !asleep) er *= 1.35f;
   if (hasTrait(TR_PLAYFUL)) fr *= 1.3f;
@@ -760,23 +806,46 @@ void tick() {
     say("cured", nullptr, true);
   }
 
-  // Sleep
+  // Sleep. On the schedule the pet sleeps from bedtime to wake-up time; run by hand it sleeps
+  // when put to bed (or worn out) and stays asleep until woken.
+  bool night = bedtimeNow();
   if (P.asleep) {
-    int m = minuteOfDay();
-    bool morning = m >= 0 && inWindow(m, SET.waketime, SET.waketime + 90) && P.energy > 55;
-    if (P.energy >= 99.5f || morning) {
-      if (m >= 0 && bedtimeNow() == false && P.energy > 90) {
+    bool wake;
+    if (scheduled() && timeKnown) {
+      if (night) nightSleep = true;                 // a nap that ran into bedtime
+      wake = nightSleep ? !night : P.energy >= 90;  // morning, or rested after a nap
+    } else if (P.lightsOff) {                       // put to bed: only hunger or a very long sleep wake it
+      wake = P.hunger < 12 || (millis() - sleptAt > (uint32_t)(14 * 3600000.0f / timeScale) && P.energy > 95);
+    } else {
+      wake = P.energy >= 99.5f;                     // dozed off worn out
+    }
+    if (wake) {
+      if (nightSleep && timeKnown && !night && millis() - sleptAt > (uint32_t)(4 * 3600000.0f / timeScale)) {
         P.nights++;
         if (P.nights == 1) state::diaryAdd(DI_NIGHT, 0);
       }
       P.lightsOff = 0;
       wakeUp(true);
     }
+  } else if (night && !games::active() && eatFood < 0 && (!stayUp || millis() - stayUp > 10 * 60000UL)) {
+    P.lightsOff = 1;   // bedtime: lights out
+    fallAsleep();
   } else if (P.lightsOff) {
     lightsDarkT += 1;
-    if (lightsDarkT > (P.energy < 80 || bedtimeNow() ? 4 : 60)) fallAsleep();
-  } else if (P.energy < 10 || (bedtimeNow() && P.energy < 35 && imu::stillSeconds() > 120)) {
+    if (lightsDarkT > (P.energy < 80 || night ? 4 : 60)) fallAsleep();
+  } else if (P.energy < 10) {
     fallAsleep();
+  }
+  if (!night) stayUp = 0;
+  int toBed = minutesToBedtime();
+  if (toBed > 0 && toBed <= 10 && !P.asleep && !windDownSaid) {   // almost bedtime
+    windDownSaid = true;
+    say("bedtime", nullptr, true);
+    static const uint8_t YAWN[] = {act::MV_STRETCH};
+    if (!act::busy() && eatFood < 0 && !games::active()) act::play(YAWN, 1, act::TAG_REACT);
+    sfx("yawn");
+  } else if (toBed < 0 || toBed > 10) {
+    windDownSaid = false;
   }
 
   if (grumpyT > 0) grumpyT = max(0.0f, grumpyT - 1);
@@ -876,11 +945,17 @@ static void idle(float dt, Pose &p) {
   p.lookY = gazeY;
   if (phoneLook) { p.lookX = phoneLX; p.lookY = phoneLY; }
   if (petting) { p.lookX = (petX - SCREEN_W / 2) / 50.0f; p.lookY = (petY - 30) / 40.0f; }
+  if (listening()) {   // all ears: looks up at you and perks up as you speak
+    p.lookX = gazeX * 0.15f;
+    p.lookY = -0.3f;
+    p.sy *= 1.04f + listen * 0.1f;
+    p.dy -= 1 + listen * 2;
+  }
   if (talk > 0.02f) { p.lookX *= 0.3f; p.lookY *= 0.3f; }
   // breathing
   p.dy += sinf(clk * 2.1f) * 0.7f;
   // fidgets
-  if (act::busy() || eatFood >= 0 || P.asleep || petting) return;
+  if (act::busy() || eatFood >= 0 || P.asleep || petting || listening()) return;
   fidgetT -= dt;
   if (fidgetT > 0) return;
   fidgetT = 6 + rnd() * 10;
@@ -1186,8 +1261,9 @@ static void applySetting(uint8_t key, uint16_t v) {
     case SET_CONTRAST: SET.contrast = min<uint16_t>(v, 255); contrastNow = SET.contrast; gfx::setContrast(SET.contrast); break;
     case SET_FLIP: SET.flip = v != 0; gfx::setFlip(SET.flip ^ (upside && SET.autoRotate)); break;
     case SET_AUTOROTATE: SET.autoRotate = v != 0; gfx::setFlip(SET.flip ^ (upside && SET.autoRotate)); break;
-    case SET_BEDTIME: SET.bedtime = v % 1440; break;
-    case SET_WAKETIME: SET.waketime = v % 1440; break;
+    case SET_BEDTIME: SET.bedtime = v % 1440; scheduleChanged(); break;
+    case SET_WAKETIME: SET.waketime = v % 1440; scheduleChanged(); break;
+    case SET_MANUALSLEEP: SET.manualSleep = v != 0; scheduleChanged(); break;
     case SET_BUBBLES: SET.bubbles = v != 0; break;
     case SET_SENS: SET.sens = min<uint16_t>(v, 4); imu::setSensitivity(SET.sens); break;
     case SET_SLEEPDIM: SET.sleepDim = v != 0; break;
@@ -1314,6 +1390,9 @@ static String stateJson();
 void handle(uint32_t cid, const uint8_t *d, size_t n) {
   if (!n) return;
   uint8_t op = d[0];
+  if (op != OP_PING && op != OP_HELLO && op != OP_FRAME_REQ && op != OP_SAY && op != OP_TALK && op != OP_EMOTE &&
+      op != OP_DIARY)
+    poke();
   switch (op) {
     case OP_HELLO:
       if (n >= 7) {
@@ -1338,7 +1417,7 @@ void handle(uint32_t cid, const uint8_t *d, size_t n) {
         }
       }
       comms::sendTo(cid, stateJson());
-      comms::requestFrame(cid, true);
+      if (!(n >= 8 && (d[7] & HELLO_NO_MIRROR))) comms::requestFrame(cid, true);
       if (mode == M_LIFE && !P.asleep && (cid != comms::BLE_CLIENT || !phoneLeftAt || millis() - phoneLeftAt > BLIP_MS)) {
         joyT = 0.8f;
         say("greet", nullptr, true);
@@ -1377,6 +1456,17 @@ void handle(uint32_t cid, const uint8_t *d, size_t n) {
           break;
         case CARE_BOOP: motion(imu::EV_TAP); break;
         case CARE_TICKLE: motion(imu::EV_DOUBLE_TAP); break;
+        case CARE_SLEEP:   // tucked in by the owner: lights out, asleep right away
+          P.lightsOff = 1;
+          lightsDarkT = 0;
+          if (!P.asleep && !games::active()) fallAsleep();
+          markDirty();
+          break;
+        case CARE_WAKE:
+          P.lightsOff = 0;
+          if (P.asleep) wakeUp(P.energy > 25);
+          markDirty();
+          break;
       }
       break;
     case OP_TRICK:
@@ -1439,6 +1529,13 @@ void handle(uint32_t cid, const uint8_t *d, size_t n) {
       }
       break;
     case OP_PING: comms::sendTo(cid, "{\"t\":\"pong\"}"); break;
+    case OP_LISTEN:
+      if (n >= 2 && mode == M_LIFE) {
+        if (d[1] && !listening() && !P.asleep) surpriseT = 0.25f;   // perks up
+        listen = d[1] ? (d[1] - 1) / 254.0f : 0;
+        listenAt = d[1] ? millis() | 1 : 0;
+      }
+      break;
   }
 }
 
@@ -1456,6 +1553,7 @@ void connected(uint32_t cid, bool on) {
     petting = false;
     phoneLook = false;
     talk = 0;
+    listenAt = 0;
     if (previewing && !comms::anyone()) {
       P.av = savedAv;
       previewing = false;
@@ -1516,6 +1614,7 @@ static String stateJson() {
   j += ",\"bu\":"; j += SET.bubbles;
   j += ",\"s\":"; j += SET.sens;
   j += ",\"sd\":"; j += SET.sleepDim;
+  j += ",\"sm\":"; j += SET.manualSleep;
   j += ",\"cal\":"; j += SET.calibrated;
   j += ",\"ts\":"; j += (int)timeScale;
   j += "},\"st\":{\"fed\":"; j += P.fed;
@@ -1527,6 +1626,7 @@ static String stateJson() {
   j += ",\"sick\":"; j += P.sickCount;
   j += ",\"n\":"; j += P.nights;
   j += "},\"time\":"; j += timeKnown ? 1 : 0;
+  j += ",\"night\":"; j += bedtimeNow() ? 1 : 0;
   j += ",\"busy\":\"";
   j += games::active() ? "game" : (eatFood >= 0 ? "eating" : (act::tag() == act::TAG_TRICK ? "trick" : ""));
   j += "\",\"game\":";
@@ -1586,7 +1686,11 @@ void begin(bool loaded) {
   screens::buildQr(SET.appUrl);
   act::setSfxHook(sfx);
   games::setSfxHook(sfx);
-  if (P.asleep && P.energy > 90) P.asleep = 0;   // don't boot into a nap it has finished
+  if (P.asleep && P.energy > 90 && !P.lightsOff) P.asleep = 0;   // don't boot into a nap it has finished
+  if (P.asleep) {
+    nightSleep = P.lightsOff;
+    sleptAt = millis();
+  }
   lastSave = millis();
   mode = M_SPLASH;
   modeT = 0;

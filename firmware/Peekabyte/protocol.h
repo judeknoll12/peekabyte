@@ -26,7 +26,11 @@ enum Op : uint8_t {
   OP_DIARY = 0x12,       // ask for the diary
   OP_TRAITS = 0x13,      // u8 trait, u8 trait
   OP_PING = 0x14,
+  OP_LISTEN = 0x15,      // u8 0 = stopped listening, 1..255 = listening, with the speaker's voice level
 };
+
+// OP_HELLO flags
+#define HELLO_NO_MIRROR 0x01   // the app doesn't show the screen: don't start sending frames
 
 enum CareAction : uint8_t {
   CARE_CLEAN = 1,
@@ -35,6 +39,8 @@ enum CareAction : uint8_t {
   CARE_LIGHTS_ON = 4,
   CARE_BOOP = 5,
   CARE_TICKLE = 6,
+  CARE_SLEEP = 7,        // put to bed now
+  CARE_WAKE = 8,         // wake up now
 };
 
 enum TrickMode : uint8_t { TM_COMMAND = 0, TM_TREAT = 1, TM_PRAISE = 2 };
@@ -51,6 +57,7 @@ enum SetKey : uint8_t {
   SET_SLEEPDIM = 9,
   SET_TIMESCALE = 10,   // developer: needs run this many times faster
   SET_HARDCORE = 11,    // reserved
+  SET_MANUALSLEEP = 12, // 1 = sleeps only when put to bed, 0 = sleeps and wakes on the schedule
 };
 
 enum GameCmd : uint8_t { GC_START = 1, GC_INPUT = 2, GC_QUIT = 3 };

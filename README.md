@@ -12,6 +12,8 @@ A pocket pet made of two very expressive eyes. It lives on an ESP32 with a 0.96"
 
 The app reconnects by itself next time. The pet keeps living even when your phone isn't around. Its name and look never change unless you change them in the app.
 
+**Talk to it:** tap the microphone on the Home screen and just talk. It answers out loud and then listens for your reply, back and forth, until you stop talking or tap to hang up. It also speaks up by itself when it wants something, and now and then just to chat (Settings → Talking → Chattiness).
+
 ### The iPhone app (recommended on iPhone)
 
 The Peekabyte app does everything the web page does, plus: Bluetooth stays connected while the phone is locked, and the AI brain runs on the iPhone's graphics chip, so it can be several times bigger and smarter (and it doesn't crash the page). It isn't on the App Store; you install it yourself from a Windows PC with a free Apple ID:
@@ -46,9 +48,9 @@ The app shows which one fits your iPhone best.
 | Need | How to help |
 | --- | --- |
 | 🍎 Food | **Feed**: 12 foods. Every pet has a secret favorite (and one it hates). |
-| ⚡ Energy | It sleeps at night (bedtime is set in Settings) or when tired. Turn the **lights off**, lay it face‑down, or rock it gently. |
+| ⚡ Energy | It goes to bed and wakes up by itself on a schedule you set (Settings → Sleep). Turn the schedule off to run bedtime yourself: tap **Sleep** and **Wake up** (or say "goodnight"). Laying it face‑down or rocking it gently also sends it to sleep. |
 | 🎈 Fun | **Play** Snack Catch or Which Way?, teach it tricks, play peekaboo. |
-| 💗 Love | Stroke the screen in the app, tickle it, talk to it, rock it. |
+| 💗 Love | Hold **Pet** in the app (its eyes follow your finger; wiggle fast to tickle), talk to it, rock it. |
 | 🩺 Health | Neglect makes it sick (it never dies). **Medicine** fixes it. |
 | 🧹 Crumbs | Eating is messy. Tap **Clean**, or tilt the pet and the crumbs slide off the screen. |
 
@@ -80,6 +82,10 @@ Twelve built‑in tricks (spin, jump, wink, eye roll, dance, play dead, peekaboo
 
 - **Nemotron‑style**: a natural, warm voice in the style of NVIDIA's Nemotron voice‑agent demos, made with the open‑source **Kokoro** model running on the phone (a one‑time ~90 MB download). NVIDIA's own Nemotron speech model needs a desktop GPU, so it can't run on a phone.
 - More Kokoro voices (Sunny, Buddy, Squeaky, Robo), two **babble** voices (instant, Animal Crossing style) and the phone's built‑in voice.
+
+**Talking.** Tap the microphone and speak. In the iPhone app your words are recognized by the iPhone's own speech recognition, on the phone itself when it supports that (iPhones from the XS on do, for English); in a browser, by the browser's speech recognition. While you talk the pet looks up at you and perks up with your voice. It speaks up when it wants something (again every few minutes until it gets it) and starts little conversations on its own; **Chattiness** sets how often.
+
+**Looks.** Settings → Appearance: light, dark or match the phone, and five colors.
 
 **AI brain** (Settings → AI brain). The pet chats and reacts in character using a small open‑source language model, run in the browser by [Transformers.js](https://github.com/huggingface/transformers.js):
 
@@ -117,13 +123,15 @@ app/                  the phone app (static site, no build step)
   js/link.js            Web Bluetooth / USB bridge connection
   js/brain.js           on-device AI (llm-worker.js runs the model)
   js/voice.js           voices + effects (tts-worker.js runs Kokoro)
+  js/listen.js          talking to the pet with your voice
 ios/                  the iPhone app: a native shell around app/ (Swift)
   Bridge.swift          messages between the page and the phone (see app/js/native.js)
   BLE.swift             Bluetooth that stays up in the background
   LLM.swift             llama.cpp on the GPU; ModelStore.swift downloads the brains
+  Listen.swift          speech recognition for talking to the pet
+design/               the logo and app icon (SVG); tools/render_art.py makes the PNGs
 tools/usb_bridge.py   run the app on your computer over USB (no Bluetooth needed)
 tools/ble_test.py     Bluetooth smoke test from a computer (pip install bleak)
-tools/make_icon.py    draws app/icon.png
 ```
 
 ## Build and flash

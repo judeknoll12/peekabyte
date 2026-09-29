@@ -4,7 +4,8 @@
 const L = {
   greet: ['Hi {owner}! I missed you!', 'Yay, you\'re here!', 'Hello hello!', 'There you are!', 'Hi! Did you bring snacks?'],
   hungry: ['My tummy is rumbling...', 'Food please?', 'I could really go for some {fav}.', 'Is it snack time yet?', 'So... hungry...'],
-  sleepy: ['I\'m getting so sleepy...', 'Can we turn the lights off?', '*yaaawn*', 'My eyes are heavy...'],
+  sleepy: ['I\'m getting so sleepy...', 'Can you put me to bed?', '*yaaawn*', 'My eyes are heavy...'],
+  bedtime: ['It\'s almost bedtime!', 'Bedtime soon... *yawn*', 'Just a few more minutes before bed!', 'Almost time to sleep, {owner}.'],
   lonely: ['Pet me? Pretty please?', 'I need a cuddle.', 'Do you still love me?', 'Hug time?'],
   bored: ['I\'m so bored. Play with me!', 'Let\'s play a game!', 'Wanna teach me a trick?', 'Entertain me!'],
   sick: ['I don\'t feel so good...', 'Achoo! I think I\'m sick.', 'Medicine... please...', 'Everything is spinny and bad.'],
@@ -58,6 +59,7 @@ const L = {
 const BABY = {
   greet: ['Hi hi!', 'Goo! You!', 'Yay!'],
   hungry: ['Food? Food!', 'Num num?', 'Hungee...'],
+  bedtime: ['Nigh-nigh soon...', 'Sleepy time?'],
   sleepy: ['Sleepy...', 'Nigh-nigh?'],
   lonely: ['Uppy? Cuddle?', 'Pet pet?'],
   bored: ['Play! Play!', 'Bored...'],
@@ -68,7 +70,45 @@ const BABY = {
   muse: ['Goo goo?', 'Blink blink!', 'Wawa!'],
 };
 
+// Things the pet says when it just feels like talking: questions for you, little stories, jokes.
+const CHAT = {
+  ask: ['What did you do today, {owner}?', 'What\'s your favorite color? Mine is glowing blue.', 'If you had a superpower, what would it be?',
+    'What should we do tomorrow?', 'What\'s the best snack in the whole world?', 'Do you have any friends I should meet?',
+    'What music do you like?', 'Where would you go if you could go anywhere?', 'What made you smile today?',
+    'Do you think I\'d be good at soccer?', 'What are you up to right now?', 'Can you teach me a new word?'],
+  tell: ['I had the weirdest dream about {fav}.', 'I counted my pixels today. There are so many!', 'I practiced blinking. I\'m getting really good at it.',
+    'Guess what? You\'re my favorite human.', 'I tried to wink with both eyes. It didn\'t work.', 'I wonder what clouds taste like.',
+    'Sometimes I blink just for fun.', 'I think I\'m getting smarter every day.'],
+  joke: ['Why did the robot go on vacation? To recharge its batteries!', 'What do you call a sleepy pixel? A nap-sized byte!',
+    'Knock knock! Oh wait, I don\'t have hands. Hehe.', 'Why was the computer cold? It left its Windows open!'],
+  morning: ['Good morning, {owner}! Did you sleep well?', 'Morning! What\'s the plan today?', 'Rise and shine! I\'m wide awake!'],
+  evening: ['What was the best part of your day?', 'Evenings are cozy. What are you up to?', 'Did you have a good day, {owner}?'],
+  late: ['It\'s getting late... are you sleepy too?', 'Shouldn\'t we both be asleep? Hehe.'],
+};
+const BABY_CHAT = ['Goo? Play?', 'Hehe! You!', 'Wawa goo!', 'Blink blink!', 'Pat pat?'];
+
 const pick = (a) => a[Math.floor(Math.random() * a.length)];
+
+// Something to start a conversation with: { text, emotion, idea }, where idea is the same
+// thought in words for the AI brain.
+export function starter(ctx) {
+  const h = new Date().getHours();
+  const time = h >= 5 && h < 11 ? 'morning' : h >= 17 && h < 22 ? 'evening' : h >= 22 || h < 5 ? 'late' : null;
+  const kinds = ['ask', 'ask', 'tell', 'joke'];
+  if (time) kinds.push(time);
+  const kind = pick(kinds);
+  const pool = ctx.stage === 1 ? BABY_CHAT : CHAT[kind];
+  const text = pick(pool).replace(/\{(\w+)\}/g, (_, k) => ctx[k] ?? '').replace(/\s+/g, ' ').trim();
+  const idea = {
+    ask: `ask ${ctx.owner} a fun, friendly question about their day or the things they like`,
+    tell: 'tell them a tiny, cute thought or something silly you noticed',
+    joke: 'tell them a very short, silly, kid-friendly joke',
+    morning: `say good morning to ${ctx.owner} and ask how they slept`,
+    evening: `ask ${ctx.owner} how their day went`,
+    late: 'notice that it is getting late and ask if they are sleepy too',
+  }[kind];
+  return { text, emotion: kind === 'joke' ? 'joy' : kind === 'ask' ? 'happy' : 'thinking', idea };
+}
 
 export function line(intent, ctx) {
   const pool = (ctx.stage === 1 && BABY[intent]) || L[intent] || L.muse;
@@ -82,7 +122,7 @@ export function emotionFor(intent) {
     fav_food: 'love', yuck: 'angry', purr: 'love', tickle: 'joy', dizzy: null, stop: 'angry', scared: 'scared',
     whee: 'joy', peekaboo: 'joy', grumpy: 'angry', learned: 'stars', show_off: 'smug', stage_up: 'stars',
     hatched: 'joy', cured: 'stars', new_name: 'joy', new_look: 'smug', record: 'stars', praised: 'joy',
-    trick_fail: 'sad', muse: 'thinking',
+    trick_fail: 'sad', muse: 'thinking', bedtime: 'sleepy',
   }[intent] ?? null;
 }
 
@@ -91,6 +131,7 @@ export function describe(intent, ctx) {
   return {
     greet: `${ctx.owner} just opened the app to visit you`,
     hungry: 'you are getting hungry and want food',
+    bedtime: 'it is almost your bedtime and you are getting sleepy',
     sleepy: 'you are getting very sleepy',
     lonely: 'you feel lonely and want to be petted',
     bored: 'you are bored and want to play',

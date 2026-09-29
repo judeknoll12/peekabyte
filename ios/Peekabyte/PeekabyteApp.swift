@@ -13,7 +13,6 @@ struct PeekabyteApp: App {
     var body: some Scene {
         WindowGroup {
             RootView()
-                .preferredColorScheme(.dark)
         }
     }
 }
@@ -28,32 +27,50 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     }
 }
 
-let pageBackground = UIColor(red: 10 / 255, green: 12 / 255, blue: 22 / 255, alpha: 1)
+/// The launch screen's color: light or dark with the phone (Assets: LaunchBackground).
+let launchBackground = UIColor(named: "LaunchBackground") ?? UIColor(red: 13 / 255, green: 14 / 255, blue: 26 / 255, alpha: 1)
 
 struct RootView: View {
     @StateObject private var shell = Shell()
 
     var body: some View {
         ZStack {
-            Color(pageBackground).ignoresSafeArea()
+            Color(shell.background).ignoresSafeArea()
             WebView(shell: shell).ignoresSafeArea()
+            if shell.splash {
+                Splash().transition(.opacity)
+            }
             if let problem = shell.problem {
                 VStack(spacing: 14) {
-                    Text("👀").font(.system(size: 56))
-                    Text("Can't reach Peekabyte").font(.title2.bold())
+                    Image("LaunchLogo")
+                    Text("Can't reach Peekabyte").font(.system(.title2, design: .rounded).bold())
                     Text(problem)
                         .multilineTextAlignment(.center)
-                        .foregroundColor(.gray)
+                        .foregroundColor(.secondary)
                     Button("Try again") { shell.reload() }
                         .buttonStyle(.borderedProminent)
+                        .tint(Color(red: 108 / 255, green: 77 / 255, blue: 245 / 255))
                         .padding(.top, 6)
                 }
-                .foregroundColor(.white)
                 .padding(32)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color(pageBackground))
+                .background(Color(shell.background).ignoresSafeArea())
             }
         }
+        .preferredColorScheme(shell.scheme)
+        .animation(.easeOut(duration: 0.35), value: shell.splash)
+    }
+}
+
+/// Picks up exactly where the launch screen leaves off (same color, same logo in the same
+/// spot) and stays until the page has drawn itself, so opening the app never flashes blank.
+struct Splash: View {
+    var body: some View {
+        ZStack {
+            Color(launchBackground)
+            Image("LaunchLogo")
+        }
+        .ignoresSafeArea()
     }
 }
 
@@ -68,8 +85,29 @@ final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
     static let home = URL(string: "https://judeknoll12.github.io/peekabyte/")!
 
     @Published var problem: String?
+    @Published var splash = true
+    @Published var scheme: ColorScheme?            // nil: follow the phone
+    @Published var background: UIColor = launchBackground
     let bridge = Bridge()
     private(set) lazy var webView: WKWebView = makeWebView()
+
+    override init() {
+        super.init()
+        bridge.onTheme = { [weak self] dark, color, followsPhone in
+            guard let self else { return }
+            self.scheme = followsPhone ? nil : (dark ? .dark : .light)
+            self.background = color
+            self.webView.backgroundColor = color
+            self.webView.scrollView.backgroundColor = color
+        }
+        bridge.onReady = { [weak self] in self?.hideSplash() }
+        // Never keep the splash up for long, even if the page can't say it's ready.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in self?.hideSplash() }
+    }
+
+    func hideSplash() {
+        if splash { splash = false }
+    }
 
     private func makeWebView() -> WKWebView {
         let config = WKWebViewConfiguration()
@@ -84,8 +122,8 @@ final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
 
         let view = WKWebView(frame: .zero, configuration: config)
         view.isOpaque = false
-        view.backgroundColor = pageBackground
-        view.scrollView.backgroundColor = pageBackground
+        view.backgroundColor = launchBackground
+        view.scrollView.backgroundColor = launchBackground
         view.scrollView.contentInsetAdjustmentBehavior = .never
         view.scrollView.bounces = false
         view.allowsBackForwardNavigationGestures = false
@@ -106,6 +144,8 @@ final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         problem = nil
+        // Older versions of the page don't say when they're ready.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.hideSplash() }
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
@@ -120,6 +160,7 @@ final class Shell: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
         let e = error as NSError
         if e.domain == NSURLErrorDomain && e.code == NSURLErrorCancelled { return }
         if e.domain == "WebKitErrorDomain" && e.code == 102 { return }   // navigation handed off elsewhere
+        hideSplash()
         problem = "The app loads from the internet the first time (after that it works offline too). Check your connection.\n\n\(e.localizedDescription)"
     }
 

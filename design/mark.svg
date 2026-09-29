@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- The app icon as a rounded badge with a clear background: the launch screen logo. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#9D80FF"/>
+      <stop offset="0.55" stop-color="#6C4DF5"/>
+      <stop offset="1" stop-color="#4A2ED4"/>
+    </linearGradient>
+    <radialGradient id="shine" cx="0.26" cy="0.1" r="0.8">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.34"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="shell" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#E8E1FF"/>
+    </linearGradient>
+    <linearGradient id="screen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1B1E47"/>
+      <stop offset="1" stop-color="#0A0B1B"/>
+    </linearGradient>
+    <filter id="drop" x="-30%" y="-30%" width="160%" height="170%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="30" result="blur"/>
+      <feOffset in="blur" dy="34" result="off"/>
+      <feFlood flood-color="#23126E" flood-opacity="0.45" result="color"/>
+      <feComposite in="color" in2="off" operator="in" result="shadow"/>
+      <feMerge><feMergeNode in="shadow"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="20" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <clipPath id="badge"><rect x="32" y="32" width="960" height="960" rx="216"/></clipPath>
+  </defs>
+
+  <g clip-path="url(#badge)">
+    <rect width="1024" height="1024" fill="url(#bg)"/>
+    <rect width="1024" height="1024" fill="url(#shine)"/>
+    <g filter="url(#drop)">
+      <rect x="192" y="214" width="640" height="602" rx="222" fill="url(#shell)"/>
+    </g>
+    <rect x="273" y="316" width="478" height="358" rx="124" fill="url(#screen)"/>
+    <g filter="url(#glow)" fill="#8EEBFF">
+      <ellipse cx="418" cy="494" rx="73" ry="88"/>
+      <ellipse cx="606" cy="494" rx="73" ry="88"/>
+    </g>
+    <g fill="#F5FEFF">
+      <ellipse cx="418" cy="494" rx="73" ry="88"/>
+      <ellipse cx="606" cy="494" rx="73" ry="88"/>
+    </g>
+    <g fill="#10122A">
+      <circle cx="441" cy="471" r="39"/>
+      <circle cx="629" cy="471" r="39"/>
+    </g>
+    <g fill="#FFFFFF">
+      <circle cx="453" cy="458" r="12"/>
+      <circle cx="641" cy="458" r="12"/>
+    </g>
+    <ellipse cx="324" cy="736" rx="45" ry="25" fill="#FF8FC2"/>
+    <ellipse cx="700" cy="736" rx="45" ry="25" fill="#FF8FC2"/>
+  </g>
+</svg>

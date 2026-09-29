@@ -276,6 +276,15 @@ export class Voice extends EventTarget {
     });
   }
 
+  // Resolves once everything queued has been said (or after 8 s at most).
+  idle() {
+    return new Promise((resolve) => {
+      const give = setTimeout(done, 8000);
+      const poll = setInterval(() => { if (!this.busy && !this.queue.length) done(); }, 150);
+      function done() { clearTimeout(give); clearInterval(poll); resolve(); }
+    });
+  }
+
   stop() {
     this.queue.forEach((q) => q.resolve());
     this.queue = [];

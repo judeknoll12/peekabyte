@@ -3,13 +3,14 @@
 export const OP = {
   HELLO: 0x01, FRAME_REQ: 0x02, FEED: 0x03, PET: 0x04, CARE: 0x05, TRICK: 0x06, TRICK_DEF: 0x07,
   AVATAR: 0x08, NAME: 0x09, SET: 0x0a, GAME: 0x0b, SAY: 0x0c, TALK: 0x0d, EMOTE: 0x0e, SYS: 0x0f,
-  CALIB: 0x10, LOOK: 0x11, DIARY: 0x12, TRAITS: 0x13, PING: 0x14,
+  CALIB: 0x10, LOOK: 0x11, DIARY: 0x12, TRAITS: 0x13, PING: 0x14, LISTEN: 0x15,
 };
-export const CARE = { CLEAN: 1, MEDICINE: 2, LIGHTS_OFF: 3, LIGHTS_ON: 4, BOOP: 5, TICKLE: 6 };
+export const HELLO = { NO_MIRROR: 1 };
+export const CARE = { CLEAN: 1, MEDICINE: 2, LIGHTS_OFF: 3, LIGHTS_ON: 4, BOOP: 5, TICKLE: 6, SLEEP: 7, WAKE: 8 };
 export const TRICK_MODE = { COMMAND: 0, TREAT: 1, PRAISE: 2 };
 export const SET = {
   CONTRAST: 1, FLIP: 2, AUTOROTATE: 3, DRIVER: 4, BEDTIME: 5, WAKETIME: 6, BUBBLES: 7, SENS: 8, SLEEPDIM: 9,
-  TIMESCALE: 10,
+  TIMESCALE: 10, MANUALSLEEP: 12,
 };
 export const GAME = { START: 1, INPUT: 2, QUIT: 3, CATCH: 1, WHICHWAY: 2 };
 export const SYS = { REBOOT: 1, NEW_EGG: 2, FACTORY: 3, HATCH: 4, CONNECT_CARD: 5 };
@@ -18,7 +19,6 @@ export const EMO = {
   none: 0, happy: 1, joy: 2, sad: 3, angry: 4, surprised: 5, scared: 6, sleepy: 7, love: 8, stars: 9,
   thinking: 10, smug: 11, silly: 12, cry: 13, wink: 14,
 };
-export const MSG_KEYFRAME = 0x81, MSG_DELTA = 0x82, MSG_RAW = 0x80;
 
 const utf8 = new TextEncoder();
 
@@ -32,12 +32,12 @@ export function bytes(...parts) {
 }
 
 export const enc = {
-  hello(url) {
+  hello(url, flags = 0) {
     const epoch = Math.floor(Date.now() / 1000);
     const tz = -new Date().getTimezoneOffset();
     const u = url.startsWith('https://') ? utf8.encode(url).slice(0, 99) : new Uint8Array(0);
     return bytes(OP.HELLO, epoch & 0xff, (epoch >> 8) & 0xff, (epoch >> 16) & 0xff, (epoch >>> 24) & 0xff,
-      tz & 0xff, (tz >> 8) & 0xff, 0, u.length, u);
+      tz & 0xff, (tz >> 8) & 0xff, flags, u.length, u);
   },
   frameReq: (key) => bytes(OP.FRAME_REQ, key ? 1 : 0),
   feed: (food) => bytes(OP.FEED, food),
@@ -62,7 +62,16 @@ export const enc = {
   diary: () => bytes(OP.DIARY),
   traits: (a, b) => bytes(OP.TRAITS, a, b),
   ping: () => bytes(OP.PING),
+  listen: (level) => bytes(OP.LISTEN, level ? Math.max(1, Math.min(255, level | 0)) : 0),   // 0 = done
 };
+
+// Firmware version checks ("1.2.0" >= "1.2").
+export function fwAtLeast(v, want) {
+  const a = String(v || '0').split('.').map(Number);
+  const b = String(want).split('.').map(Number);
+  for (let i = 0; i < 3; i++) if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) > (b[i] || 0);
+  return true;
+}
 
 // ---- The pet's world ---------------------------------------------------------------
 export const FOODS = [
