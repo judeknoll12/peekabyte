@@ -12,6 +12,27 @@ A pocket pet made of two very expressive eyes. It lives on an ESP32 with a 0.96"
 
 The app reconnects by itself next time. The pet keeps living even when your phone isn't around. Its name and look never change unless you change them in the app.
 
+### The iPhone app (recommended on iPhone)
+
+The Peekabyte app does everything the web page does, plus: Bluetooth stays connected while the phone is locked, and the AI brain runs on the iPhone's graphics chip, so it can be several times bigger and smarter (and it doesn't crash the page). It isn't on the App Store; you install it yourself from a Windows PC with a free Apple ID:
+
+1. On the PC, install **Sideloadly** (sideloadly.io). On Windows it also needs **iTunes** and **iCloud**, the versions from Apple's website rather than the Microsoft Store.
+2. Download **Peekabyte.ipa** from the [latest iPhone build](https://github.com/judeknoll12/peekabyte/releases/tag/ios-latest).
+3. Plug the iPhone into the PC, unlock it and tap **Trust**.
+4. In Sideloadly, drop in `Peekabyte.ipa`, enter your Apple ID and press **Start**. It signs the app with a free developer certificate; your Apple ID and password only go to Apple.
+5. On the iPhone, turn on **Settings → Privacy & Security → Developer Mode** (it restarts), then trust your Apple ID under **Settings → General → VPN & Device Management**.
+6. Open Peekabyte, allow Bluetooth, and connect. In **Settings → AI brain**, pick a brain; it downloads once over Wi‑Fi (keep the app open meanwhile).
+
+Apps signed with a free Apple ID stop opening after 7 days. Run Sideloadly again (or turn on its auto-refresh) to renew it; your pet, settings and downloaded brains stay. AltStore (altstore.io) can instead renew it automatically over Wi‑Fi while the PC is on. A paid Apple Developer account ($99/year) removes the 7-day limit.
+
+| Brain (iPhone app) | Model | Download | Notes |
+| --- | --- | --- | --- |
+| Sage | Qwen3 1.7B (Apache 2.0) | 1.1 GB | The smartest; needs an iPhone with 6 GB of memory |
+| Gem | Gemma 3 1B | 810 MB | Always in character; fits every iPhone |
+| Pip | Qwen3 0.6B (Apache 2.0) | 640 MB | The quickest |
+
+The app shows which one fits your iPhone best.
+
 ### If it keeps disconnecting
 
 - **Keep the app open.** iPhones pause Bluetooth for apps in the background and when the screen locks. The app keeps the screen awake while the pet is connected (Settings → Connection → Keep the screen on). If your browser can't do that, set Auto‑Lock to Never while you play. Coming back to the app reconnects by itself within a second or two.
@@ -96,6 +117,10 @@ app/                  the phone app (static site, no build step)
   js/link.js            Web Bluetooth / USB bridge connection
   js/brain.js           on-device AI (llm-worker.js runs the model)
   js/voice.js           voices + effects (tts-worker.js runs Kokoro)
+ios/                  the iPhone app: a native shell around app/ (Swift)
+  Bridge.swift          messages between the page and the phone (see app/js/native.js)
+  BLE.swift             Bluetooth that stays up in the background
+  LLM.swift             llama.cpp on the GPU; ModelStore.swift downloads the brains
 tools/usb_bridge.py   run the app on your computer over USB (no Bluetooth needed)
 tools/ble_test.py     Bluetooth smoke test from a computer (pip install bleak)
 tools/make_icon.py    draws app/icon.png
@@ -118,3 +143,5 @@ To go back to GlowByte, flash `Documents/GlowByte/GlowByte` the same way.
 ## Hosting the app
 
 The app is plain files in `app/`. The included GitHub Actions workflow publishes them to GitHub Pages on every push: in the repository, open **Settings → Pages** and set **Source** to **GitHub Actions**. Web Bluetooth needs an https page, which is why the app is hosted rather than served by the pet itself.
+
+The iPhone app (`ios/`) loads the same page, so app changes reach it without reinstalling. Changes under `ios/` rebuild it: `.github/workflows/ios.yml` fetches llama.cpp's prebuilt iOS framework, generates the Xcode project with XcodeGen, builds an unsigned `.ipa` on a GitHub-hosted Mac, and publishes it on the `ios-latest` release.

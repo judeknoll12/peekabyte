@@ -1,6 +1,7 @@
 // Peekabyte phone app.
+import { isNative } from './native.js';
 import { awake, keepAwake } from './awake.js';
-import { Brain, MODELS } from './brain.js';
+import { Brain, MODELS, fmtSize } from './brain.js';
 import * as connlog from './connlog.js';
 import { Link } from './link.js';
 import { Mirror, TINTS } from './mirror.js';
@@ -30,7 +31,7 @@ function el(tag, attrs = {}, ...kids) {
 // ---------------------------------------------------------------- preferences ----
 const DEFAULTS = {
   owner: '', speak: true, sfx: true, sfxVol: 0.6, tint: 'ice', brain: '', aiMode: 'special', kokoroOk: false,
-  keepAwake: true, lastPet: '',
+  keepAwake: !isNative, lastPet: '',
   voice: { preset: 'nemo', engine: 'kokoro', voice: 'af_heart', pitch: 0, speed: 1, fx: 'none', volume: 1, systemVoice: '' },
 };
 let prefs = structuredClone(DEFAULTS);
@@ -287,7 +288,7 @@ function guardBeat() {
   try {
     localStorage.setItem(GUARD_KEY, JSON.stringify({
       t: Date.now(), vis: !document.hidden,
-      ai: brain.state === 'loading' || brain.state === 'ready' ? prefs.brain : '',
+      ai: !isNative && (brain.state === 'loading' || brain.state === 'ready') ? prefs.brain : '',
       tts: voice.kState === 'loading' || voice.kState === 'ready',
     }));
   } catch { /* private mode */ }
@@ -681,8 +682,8 @@ function renderSuggest() {
 function renderBrainCard() {
   const st = brain.state;
   const m = brain.model;
-  $('#brainTitle').textContent = st === 'ready' ? `🧠 ${m.name} is awake (${m.model})` : st === 'loading' ? `Downloading ${m.name}…` : st === 'error' ? 'Brain hiccup' : 'AI brain is off';
-  $('#brainSub').textContent = st === 'ready' ? `Open-source AI running on this device · ${brain.info}` : st === 'loading' ? `${Math.round(brain.progress * 100)}% · this only happens once` : st === 'error' ? brain.info : 'Your pet uses its phrase book. Turn on an open-source AI brain in Settings.';
+  $('#brainTitle').textContent = st === 'ready' ? `🧠 ${m.name} is awake (${m.model})` : st === 'loading' ? (brain.stage === 'start' ? `Waking ${m.name} up…` : `Getting ${m.name}…`) : st === 'error' ? 'Brain hiccup' : 'AI brain is off';
+  $('#brainSub').textContent = st === 'ready' ? `Open-source AI running on this device · ${brain.info}` : st === 'loading' ? brain.loadingText : st === 'error' ? brain.info : 'Your pet uses its phrase book. Turn on an open-source AI brain in Settings.';
   $('#brainProg').classList.toggle('hidden', st !== 'loading');
   $('#brainProg i').style.width = `${Math.round(brain.progress * 100)}%`;
 }
@@ -882,6 +883,7 @@ $$('.tab').forEach((b) => b.addEventListener('click', () => showTab(b.dataset.ta
 
 // ---------------------------------------------------------------- connection page ----
 function awakeNote() {
+  if (awake.native) return awake.active ? 'On: the screen stays on while the pet is connected' : 'Not needed in the app: Bluetooth stays connected while the phone is locked';
   if (!awake.supported) return "This browser can't keep the screen on. While you play, set Auto-Lock to Never (Settings › Display & Brightness), or the link drops when the phone locks.";
   if (awake.active) return 'On: the phone stays awake while the pet is connected, so the link doesn\'t drop when it would lock';
   if (awake.error) return `The phone said no: ${awake.error}. Tap anywhere to try again.`;
@@ -1041,25 +1043,46 @@ function renderSettings() {
   // --- Brain
   const bc = el('div', { class: 'card' }, el('h3', {}, '🧠 AI brain (open source, on-device)'));
   bc.append(el('div', { class: 'muted', style: 'font-size:13px;margin-bottom:12px;line-height:1.5' },
-    'A small open-source language model runs right on this phone: no account, no internet after the first download, and your chats never leave the device.'));
+    isNative
+      ? `An open-source language model runs on this iPhone's graphics chip: no account, no internet after the download, and your chats never leave the phone.${brain.memoryGB ? ` This iPhone has ${Math.round(brain.memoryGB)} GB of memory, so ${brain.recommended().name} is the best fit.` : ''}`
+      : 'A small open-source language model runs right on this phone: no account, no internet after the first download, and your chats never leave the device.'));
   const off = el('button', { class: `model ${!prefs.brain ? 'on' : ''}`, onclick: () => { prefs.brain = ''; savePrefs(); brain.unload(); renderSettings(); } },
     el('span', { style: 'font-size:24px' }, '📖'), el('div', { class: 'grow' }, el('b', {}, 'Off - phrase book'), el('span', {}, 'Instant built-in lines. No download.')));
   bc.append(off);
   MODELS.forEach((m) => {
     const on = prefs.brain === m.key;
-    const status = on ? (brain.state === 'ready' ? '✅ ready' : brain.state === 'loading' ? `${Math.round(brain.progress * 100)}%` : brain.state === 'error' ? '⚠️ error' : '') : `${m.mb >= 1000 ? (m.mb / 1000).toFixed(1) + ' GB' : m.mb + ' MB'}`;
+    const have = brain.files.has(m.file);
+    const loading = on && brain.state === 'loading';
+    const status = on ? (brain.state === 'ready' ? '✅ ready' : loading ? (brain.stage === 'start' ? 'waking…' : `${Math.round(brain.progress * 100)}%`) : brain.state === 'error' ? '⚠️ error' : '') : have ? 'downloaded' : fmtSize(m.mb);
+    const tooBig = isNative && m.ramGB && brain.memoryGB && brain.memoryGB < m.ramGB;
     bc.append(el('button', {
       class: `model ${on ? 'on' : ''}`, style: 'margin-top:8px',
       onclick: () => {
         if (on && brain.state !== 'error') return;
         const go = () => { prefs.brain = m.key; savePrefs(); brain.load(m.key); renderSettings(); };
-        confirmSheet(`Download ${m.name}?`, `${m.model} (${m.license}) is about ${m.mb >= 1000 ? (m.mb / 1000).toFixed(1) + ' GB' : m.mb + ' MB'}. It downloads once over Wi-Fi and is kept on this device.${m.big ? ' It needs a powerful GPU and will likely not run on a phone.' : ''}`, 'Download', go);
+        if (have) return go();
+        confirmSheet(`Download ${m.name}?`, `${m.model} (${m.license}) is about ${fmtSize(m.mb)}. It downloads once over Wi-Fi and stays on this ${isNative ? 'iPhone' : 'device'}.${isNative ? ' Keep the app open while it downloads.' : ''}${tooBig ? ` It needs about ${m.ramGB + 0.5} GB of memory and this iPhone has ${Math.round(brain.memoryGB)} GB, so iOS may close it.` : ''}${m.big ? ' It needs a powerful GPU and will likely not run on a phone.' : ''}`, 'Download', go);
       },
     }, el('span', { style: 'font-size:24px' }, m.big ? '🐉' : '🧠'),
-    el('div', { class: 'grow' }, el('b', {}, `${m.name} · ${m.model}`), el('span', {}, m.blurb)),
+    el('div', { class: 'grow' }, el('b', {}, `${m.name} · ${m.model}`), el('span', {}, m.blurb + (isNative && brain.recommended().key === m.key ? ' Best fit for this iPhone.' : ''))),
     el('span', { class: 'pill' }, status)));
+    if (loading) {
+      bc.append(el('div', { class: 'muted', style: 'font-size:12.5px;margin:6px 4px 0' }, brain.loadingText),
+        el('div', { class: 'progress' }, el('i', { style: `width:${Math.round(brain.progress * 100)}%` })));
+      if (isNative && brain.stage === 'download') {
+        bc.append(el('button', { class: 'btn small', style: 'margin-top:8px', onclick: () => { brain.cancelDownload(); prefs.brain = ''; savePrefs(); brain.unload(); renderSettings(); } }, 'Stop download'));
+      }
+    }
   });
   if (prefs.brain && brain.state === 'error') bc.append(el('div', { class: 'muted', style: 'font-size:13px;margin-top:8px;color:#ffc2ca' }, brain.info));
+  const stored = isNative ? MODELS.filter((m) => brain.files.has(m.file) && m.key !== prefs.brain) : [];
+  if (stored.length) {
+    bc.append(el('div', { class: 'row wrap', style: 'margin-top:10px' },
+      ...stored.map((m) => el('button', {
+        class: 'btn small',
+        onclick: () => confirmSheet(`Delete ${m.name}?`, `Frees ${fmtSize(m.mb)}. You can download it again any time.`, 'Delete', async () => { await brain.deleteFile(m); renderSettings(); }, true),
+      }, `🗑️ Delete ${m.name} (${fmtSize(m.mb)})`))));
+  }
   bc.append(setRow('AI speaks for', 'The phrase book answers instantly; the AI takes a few seconds', select([['special', 'Chats + big moments'], ['all', 'Everything'], ['off', 'Only chats']], prefs.aiMode, (x) => { prefs.aiMode = x; savePrefs(); })));
   v.append(bc);
 
@@ -1208,12 +1231,13 @@ function init() {
     try { await navigator.clipboard.writeText(location.href); toast('Link copied - paste it into Bluefy'); } catch { toast(location.href, 5000); }
   };
   $('#btnBle').onclick = connectBle;
+  if (isNative) $('#bleHint').textContent = 'Power up your Peekabyte, then tap Connect and choose it. Your phone can stay on Wi-Fi, and the pet stays connected while the phone is locked.';
   if (!Link.bleSupported()) {
     $('#btnBle').classList.add('hidden');
     $('#bleHint').classList.add('hidden');
     $('#noBle').classList.remove('hidden');
   }
-  if (Link.bridgeAvailable()) {
+  if (Link.bridgeAvailable() && !isNative) {
     $('#btnBridge').classList.remove('hidden');
     $('#btnBridge').onclick = () => { sfx.unlock(); link.connectBridge(); };
     link.connectBridge();

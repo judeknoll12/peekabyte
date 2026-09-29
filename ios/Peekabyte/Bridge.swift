@@ -8,8 +8,8 @@ struct BridgeError: LocalizedError {
 }
 
 /// Messages between the web app and the phone. The page asks with
-/// `webkit.messageHandlers.peeka.postMessage({id, cmd, ...})` and hears back through
-/// `PeekaNative._reply(id, ok, value)`; news it didn't ask for (Bluetooth packets, download
+/// `webkit.messageHandlers.peeka.postMessage({rid, cmd, ...})` and hears back through
+/// `PeekaNative._reply(rid, ok, value)`; news it didn't ask for (Bluetooth packets, download
 /// progress, AI tokens) arrives through `PeekaNative._event(name, data)`. See app/js/native.js.
 final class Bridge: NSObject, WKScriptMessageHandler {
     weak var webView: WKWebView?
@@ -42,11 +42,11 @@ final class Bridge: NSObject, WKScriptMessageHandler {
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.frameInfo.securityOrigin.host == Shell.home.host,
               let body = message.body as? [String: Any], let cmd = body["cmd"] as? String else { return }
-        let id = (body["id"] as? NSNumber)?.intValue ?? 0
+        let rid = (body["rid"] as? NSNumber)?.intValue ?? 0   // "id" is often a device id
         handle(cmd, body) { [weak self] result in
             switch result {
-            case .success(let value): self?.reply(id, ok: true, value)
-            case .failure(let error): self?.reply(id, ok: false, error.localizedDescription)
+            case .success(let value): self?.reply(rid, ok: true, value)
+            case .failure(let error): self?.reply(rid, ok: false, error.localizedDescription)
             }
         }
     }

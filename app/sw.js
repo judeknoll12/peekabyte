@@ -1,10 +1,10 @@
 // Keeps the app shell available offline. App files are fetched fresh when there's a
 // connection (so updates show up) and served from the cache when there isn't.
-const VERSION = 'peekabyte-v3';
+const VERSION = 'peekabyte-v4';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'icon.png',
   'js/main.js', 'js/link.js', 'js/protocol.js', 'js/mirror.js', 'js/sfx.js', 'js/voice.js', 'js/tts-worker.js',
-  'js/brain.js', 'js/llm-worker.js', 'js/phrases.js', 'js/awake.js', 'js/connlog.js',
+  'js/brain.js', 'js/llm-worker.js', 'js/phrases.js', 'js/awake.js', 'js/connlog.js', 'js/native.js',
 ];
 
 self.addEventListener('install', (e) => {
