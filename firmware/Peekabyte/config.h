@@ -2,14 +2,14 @@
 #include <Arduino.h>
 
 #define APP_NAME     "Peekabyte"
-#define FW_VERSION   "1.2.0"
+#define FW_VERSION   "1.3.0"
 
 // ---- Hardware ---------------------------------------------------------------
 #define PIN_I2C_SDA    21
 #define PIN_I2C_SCL    22
 #define PIN_BOOT_BTN   0            // on-board BOOT button, active low
 #define OLED_I2C_ADDR  0x3C
-#define I2C_HZ         800000UL     // the OLED and the MPU6050/6500 both cope with 800 kHz
+#define I2C_HZ         400000UL     // the OLED's and the MPU's rated speed: faster gets flaky on a battery
 #define MPU_I2C_ADDR   0x68
 #define SCREEN_W       128
 #define SCREEN_H       64

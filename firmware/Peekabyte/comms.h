@@ -11,7 +11,8 @@ constexpr uint32_t BLE_CLIENT = 2;
 typedef void (*MessageFn)(uint32_t cid, const uint8_t *d, size_t n);
 typedef void (*ConnectFn)(uint32_t cid, bool connected);
 
-void begin(const char *bleName, MessageFn onMessage, ConnectFn onConnect);
+// gentle: lower transmit power (after the supply dipped, e.g. a weak battery)
+void begin(const char *bleName, MessageFn onMessage, ConnectFn onConnect, bool gentle = false);
 void poll();                              // runs the handlers; call from loop()
 void periodic();
 

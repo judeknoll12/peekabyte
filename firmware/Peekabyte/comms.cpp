@@ -9,6 +9,7 @@
 #include "config.h"
 #include "gfx.h"
 #include "protocol.h"
+#include "state.h"
 #include "mbedtls/base64.h"
 
 namespace comms {
@@ -279,15 +280,19 @@ static void advertise(bool fast) {
   adv->start();
 }
 
+static bool gentle = false;
+
 static void bleBegin(const char *name) {
   strlcpy(advName, name, sizeof advName);
   outLock = xSemaphoreCreateMutex();
   forgetSubscriptions();
   BLEDevice::init(advName);
   BLEDevice::setMTU(247);
-  // Full power (+9 dBm): the default +3 dBm drops out at the far side of a room.
-  esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_P9);
-  esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_P9);
+  // Full power (+9 dBm): the default +3 dBm drops out at the far side of a room. After the
+  // supply dipped (a brownout restart) the default is kinder to a weak battery.
+  esp_power_level_t level = gentle ? ESP_PWR_LVL_P3 : ESP_PWR_LVL_P9;
+  esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, level);
+  esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, level);
   BLEDevice::setCustomGattsHandler(gattsHook);
   BLEDevice::setCustomGapHandler(gapHook);
   server = BLEDevice::createServer();
@@ -461,7 +466,8 @@ void pushFrames() {
 }
 
 // ---- Public --------------------------------------------------------------------------
-void begin(const char *bleName, MessageFn m, ConnectFn c) {
+void begin(const char *bleName, MessageFn m, ConnectFn c, bool soft) {
+  gentle = soft;
   onMsg = m;
   onConn = c;
   inbox = xQueueCreate(64, sizeof(Msg *));
@@ -589,7 +595,13 @@ void linkJson(String &j) {
   }
   j += "],\"nv\":["; j += nv.used_entries; j += ','; j += nv.total_entries;
   j += "],\"mh\":"; j += ESP.getMinFreeHeap();
-  j += '}';
+  j += ",\"lp\":"; j += gentle ? 1 : 0;
+  j += ",\"bt\":[";   // how the last runs ended, newest first: [reset reason, seconds]
+  for (int i = 0; i < state::runCount(); i++) {
+    if (i) j += ',';
+    j += '['; j += state::runAt(i).why; j += ','; j += state::runAt(i).lasted; j += ']';
+  }
+  j += "]}";
 }
 
 }  // namespace comms

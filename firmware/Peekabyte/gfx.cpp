@@ -9,6 +9,9 @@ static uint8_t shadow[SCREEN_W * SCREEN_H / 8];
 static bool fullRefresh = true;
 static bool powered = true;
 static bool panelOk = false;
+static bool ssd1306 = true;
+static bool flipped = false;
+static uint8_t contrastVal = 0xCF;
 static uint32_t ver = 1;
 static uint32_t frames = 0, fpsT0 = 0;
 static float fpsVal = 0;
@@ -22,6 +25,7 @@ bool begin(uint8_t driver) {
     dev = new U8G2_SH1106_128X64_NONAME_F_HW_I2C(U8G2_R0, U8X8_PIN_NONE, PIN_I2C_SCL, PIN_I2C_SDA);
   else
     dev = new U8G2_SSD1306_128X64_NONAME_F_HW_I2C(U8G2_R0, U8X8_PIN_NONE, PIN_I2C_SCL, PIN_I2C_SDA);
+  ssd1306 = driver != DRV_SH1106;
   dev->setI2CAddress(OLED_I2C_ADDR << 1);
   dev->setBusClock(I2C_HZ);
   dev->begin();
@@ -79,8 +83,12 @@ void present() {
   fullRefresh = false;
 }
 
-void setContrast(uint8_t v) { dev->setContrast(v); }
+void setContrast(uint8_t v) {
+  contrastVal = v;
+  dev->setContrast(v);
+}
 void setFlip(bool on) {
+  flipped = on;
   dev->setFlipMode(on ? 1 : 0);
   fullRefresh = true;
 }
@@ -88,6 +96,33 @@ void setPower(bool on) {
   powered = on;
   dev->setPowerSave(on ? 0 : 1);
   if (on) fullRefresh = true;
+}
+
+// A dip in the supply (a weak battery, a loose wire) can reset the screen's controller, which then
+// sits dark, since "display off" is its power-up state, while the pet carries on. Re-sending its
+// settings every few seconds brings it back. Same settings as U8g2's own start-up, minus the
+// "display off" it begins with, so this never blanks the screen.
+void revive() {
+  if (!dev || !ssd1306) return;
+  static const uint8_t SEQ[][2] = {
+    {0xD5, 0x80}, {0xA8, 0x3F}, {0xD3, 0x00}, {0x8D, 0x14}, {0x20, 0x00}, {0xDA, 0x12}, {0xD9, 0xF1}, {0xDB, 0x40}};
+  u8x8_t *u = dev->getU8x8();
+  u8x8_cad_StartTransfer(u);
+  for (const auto &c : SEQ) {
+    u8x8_cad_SendCmd(u, c[0]);
+    u8x8_cad_SendArg(u, c[1]);
+  }
+  u8x8_cad_SendCmd(u, 0x40);                   // start line 0
+  u8x8_cad_SendCmd(u, flipped ? 0xA0 : 0xA1);  // segment remap
+  u8x8_cad_SendCmd(u, flipped ? 0xC0 : 0xC8);  // scan direction
+  u8x8_cad_SendCmd(u, 0x81);
+  u8x8_cad_SendArg(u, contrastVal);
+  u8x8_cad_SendCmd(u, 0x2E);                   // no scrolling
+  u8x8_cad_SendCmd(u, 0xA4);                   // show RAM
+  u8x8_cad_SendCmd(u, 0xA6);                   // not inverted
+  if (powered) u8x8_cad_SendCmd(u, 0xAF);      // display on
+  u8x8_cad_EndTransfer(u);
+  fullRefresh = true;                          // its memory may be gone too
 }
 
 void setClip(int x0, int y0, int x1, int y1) {

@@ -108,6 +108,18 @@ With the brain off, it uses a built‑in phrase book (instant). Everything runs 
 | MPU6050 or MPU6500 (0x68) | SDA / SCL | GPIO 21 / GPIO 22 (same bus) |
 | both | VCC / GND | 3V3 / GND |
 
+### Running on a battery
+
+The pet needs nothing from a computer or phone to run: it lives on its own and catches up with the app when they meet. Its clock comes from the phone and survives restarts, but not a power cut; until the phone is back the sleep schedule waits and the pet simply sleeps until it's rested.
+
+What it does need is a steady 5 V at the USB port or 5V pin (about 100 mA, with short peaks of a few hundred when Bluetooth transmits):
+
+- **USB power bank** into the USB port: the easiest. Many power banks switch off after 30 to 60 seconds when a gadget draws this little. Use its low-current or "always on" mode (often a double press of its button), or pick one that has one.
+- **3.7 V LiPo**: not straight onto the 5V pin (the board's regulator needs about 4.5 V there, so the screen goes dark first) and never onto 3V3 (a full cell's 4.2 V is too much for the ESP32). Use a LiPo charger + 5 V booster module (TP4056 + MT3608, or a "battery shield") into the 5V pin.
+- **AA / AAA cells**: four (about 5-6 V) into the 5V pin. Three are only enough while fresh. 9 V batteries can't deliver the peaks.
+
+If the supply dips and the pet restarts (a brownout), it says "Power dipped: saving power" on its screen and uses less power from then on. The app's Connection page lists how the last few runs ended ("ran 42 s, then the power went off") and what that points to.
+
 ## Files
 
 ```

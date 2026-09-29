@@ -1,4 +1,5 @@
 #include "pet.h"
+#include <sys/time.h>
 #include "act.h"
 #include "config.h"
 #include "face.h"
@@ -21,11 +22,34 @@ static Mode mode = M_SPLASH;
 static float modeT = 0, clk = 0;
 
 // ---- Wall clock (from the phone) ------------------------------------------------------
+// The phone sets the chip's clock whenever it connects. The clock keeps running through
+// restarts (a crash, a watchdog, "Restart"), and the time zone waits for it in memory that
+// survives them; only a power cut loses both, until the phone is back.
+RTC_NOINIT_ATTR static uint32_t rtcClockMagic;
+RTC_NOINIT_ATTR static int16_t rtcTz;
+constexpr uint32_t CLOCK_MAGIC = 0x7EC10C4Bu;
 static bool timeKnown = false;
-static int32_t epochBase = 0;   // epoch - seconds since boot
 static int16_t tzMin = 0;
 
-static uint32_t epochNow() { return timeKnown ? epochBase + millis() / 1000 : 0; }
+static uint32_t epochNow() { return timeKnown ? (uint32_t)time(nullptr) : 0; }
+
+static void setClock(uint32_t epoch, int16_t tz) {
+  struct timeval tv = {(time_t)epoch, 0};
+  settimeofday(&tv, nullptr);
+  tzMin = tz;
+  timeKnown = true;
+  rtcTz = tz;
+  rtcClockMagic = CLOCK_MAGIC;
+}
+
+static void restoreClock() {
+  if (rtcClockMagic == CLOCK_MAGIC && time(nullptr) > 1700000000) {
+    tzMin = rtcTz;
+    timeKnown = true;
+  } else {
+    rtcClockMagic = 0;
+  }
+}
 static int minuteOfDay() {
   if (!timeKnown) return -1;
   int32_t local = (int32_t)(epochNow() % 86400) + tzMin * 60;
@@ -814,10 +838,11 @@ void tick() {
     if (scheduled() && timeKnown) {
       if (night) nightSleep = true;                 // a nap that ran into bedtime
       wake = nightSleep ? !night : P.energy >= 90;  // morning, or rested after a nap
-    } else if (P.lightsOff) {                       // put to bed: only hunger or a very long sleep wake it
+    } else if (P.lightsOff && !scheduled()) {       // put to bed by hand: only hunger or a very long sleep wake it
       wake = P.hunger < 12 || (millis() - sleptAt > (uint32_t)(14 * 3600000.0f / timeScale) && P.energy > 95);
     } else {
-      wake = P.energy >= 99.5f;                     // dozed off worn out
+      // Worn out, or no clock to follow (a power cut, and no phone since): up once rested.
+      wake = P.energy >= 99.5f || (millis() - sleptAt > (uint32_t)(10 * 3600000.0f / timeScale) && P.energy > 80);
     }
     if (wake) {
       if (nightSleep && timeKnown && !night && millis() - sleptAt > (uint32_t)(4 * 3600000.0f / timeScale)) {
@@ -1397,11 +1422,8 @@ void handle(uint32_t cid, const uint8_t *d, size_t n) {
     case OP_HELLO:
       if (n >= 7) {
         uint32_t epoch = d[1] | (d[2] << 8) | (d[3] << 16) | ((uint32_t)d[4] << 24);
-        tzMin = (int16_t)(d[5] | (d[6] << 8));
-        if (epoch > 1700000000UL) {
-          epochBase = (int32_t)(epoch - millis() / 1000);
-          timeKnown = true;
-        }
+        int16_t tz = (int16_t)(d[5] | (d[6] << 8));
+        if (epoch > 1700000000UL) setClock(epoch, tz);
         if (n >= 9) {
           uint8_t ul = d[8];
           if (ul > 8 && ul < sizeof SET.appUrl && 9 + ul <= n && !memcmp(d + 9, "https://", 8)) {
@@ -1686,9 +1708,13 @@ void begin(bool loaded) {
   screens::buildQr(SET.appUrl);
   act::setSfxHook(sfx);
   games::setSfxHook(sfx);
-  if (P.asleep && P.energy > 90 && !P.lightsOff) P.asleep = 0;   // don't boot into a nap it has finished
+  restoreClock();
+  // Don't wake up into a sleep that's already done: rested, and not meant to be asleep now
+  // (put to bed by hand, or the scheduled night by a clock that survived the restart).
+  bool keepSleeping = SET.manualSleep ? P.lightsOff : bedtimeNow();
+  if (P.asleep && P.energy > 90 && !keepSleeping) P.asleep = 0;
   if (P.asleep) {
-    nightSleep = P.lightsOff;
+    nightSleep = P.lightsOff && (SET.manualSleep || bedtimeNow());
     sleptAt = millis();
   }
   lastSave = millis();

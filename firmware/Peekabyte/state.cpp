@@ -17,6 +17,9 @@ static bool petDirty = false, setDirty = false, frozen = false;
 static uint32_t petDirtyAt = 0, setDirtyAt = 0;
 
 static DiaryEntry diary[DIARY_LEN];
+static Run runs[RUNS];
+static uint8_t runN = 0;
+static uint32_t nextUptime = 5;
 static uint8_t diaryHead = 0, diaryN = 0;
 
 void defaultSettings() {
@@ -79,7 +82,30 @@ void loop() {
   // Care actions batch up for a few seconds before hitting flash.
   if (petDirty && now - petDirtyAt > 4000) savePetNow();
   if (setDirty && now - setDirtyAt > 1500) saveSettingsNow();
+  // Note how long this run has lasted, often at first (short runs are the telling ones).
+  uint32_t up = now / 1000;
+  if (up >= nextUptime) {
+    if (!frozen) prefs.putUInt("upt", up);
+    nextUptime = up < 60 ? up + 10 : (up < 300 ? up + 60 : up + 300);
+  }
 }
+
+void logBoot(uint8_t why) {
+  if (prefs.getBytesLength("runs") == sizeof runs) {
+    prefs.getBytes("runs", runs, sizeof runs);
+    runN = min<uint8_t>(prefs.getUChar("runn", 0), RUNS);
+  }
+  memmove(runs + 1, runs, sizeof(Run) * (RUNS - 1));
+  runs[0] = Run{prefs.getUInt("upt", 0), why};
+  if (runN < RUNS) runN++;
+  if (frozen) return;
+  prefs.putBytes("runs", runs, sizeof runs);
+  prefs.putUChar("runn", runN);
+  prefs.putUInt("upt", 0);
+}
+
+int runCount() { return runN; }
+const Run &runAt(int i) { return runs[i]; }
 
 void diaryAdd(uint8_t type, uint8_t arg) {
   diary[diaryHead] = DiaryEntry{P.ageSec, type, arg};

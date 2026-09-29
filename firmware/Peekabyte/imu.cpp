@@ -38,6 +38,7 @@ static int rockSign = 0, rockCount = 0;
 static uint32_t rockLastFlip = 0;
 static bool isRocking = false;
 
+static float wAvg[3] = {0, 0, 0}, wVar = 0, calmT = 0;   // resting-gyro bias check
 static uint8_t evq[16];
 static uint8_t evHead = 0, evTail = 0;
 
@@ -162,6 +163,23 @@ static void sample(float dt, uint32_t now) {
   float linMag = norm3(linc);
   if (stillT > 2.0f && wmag < 3.0f)
     for (int k = 0; k < 3; k++) bias[k] += 0.002f * w[k];
+  // A resting sensor reads a steady rate, and whatever it reads then is bias. That can be big if
+  // the pet was moving while it powered up (plugging a battery in by hand), which the slow
+  // re-learning above can't fix.
+  float dev2 = 0;
+  for (int k = 0; k < 3; k++) {
+    wAvg[k] += 0.05f * (w[k] - wAvg[k]);
+    dev2 += (w[k] - wAvg[k]) * (w[k] - wAvg[k]);
+  }
+  wVar += 0.05f * (dev2 - wVar);
+  calmT = (linMag < 0.03f && wVar < 0.5f) ? calmT + dt : 0;
+  if (calmT > 1.5f && norm3(wAvg) > 1.0f) {   // correct it in one step, then keep watching
+    for (int k = 0; k < 3; k++) {
+      bias[k] += wAvg[k];
+      wAvg[k] = 0;
+    }
+    calmT = 0;
+  }
 
   // Motion energy and googly-eye sway.
   float e = linMag + wmag / 500.0f;

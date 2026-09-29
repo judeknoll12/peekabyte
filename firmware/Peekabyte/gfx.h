@@ -23,6 +23,7 @@ float fps();
 void setContrast(uint8_t v);
 void setFlip(bool on);
 void setPower(bool on);
+void revive();                  // re-send the screen's settings (it may have reset on a power dip)
 
 // Everything below is clipped to the screen and to the clip window.
 void setClip(int x0, int y0, int x1, int y1);   // inclusive-exclusive: [x0,x1) x [y0,y1)

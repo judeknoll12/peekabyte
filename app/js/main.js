@@ -1332,6 +1332,20 @@ function openConnection() {
         }))));
     }
 
+    // How the pet's last runs ended: tells a power bank that switches off from a weak battery.
+    const runs = lk?.bt || [];
+    if (runs.length) {
+      const box = el('div', { class: 'card', style: 'margin-bottom:12px' });
+      const advice = powerAdvice(runs, lk);
+      if (advice) box.append(el('div', { class: `callout ${advice.bad ? 'warn' : ''}`, style: 'margin-bottom:8px' }, el('div', { class: 'note' }, advice.text)));
+      box.append(el('div', { class: 'facts' },
+        el('div', { class: 'fact' }, el('span', {}, 'Now'), el('b', {}, `running for ${fmtSecs(lk.up)}${lk.lp ? ', saving power after a dip' : ''}`)),
+        ...runs.slice(0, 5).map(([why, secs], i) => el('div', { class: 'fact' },
+          el('span', {}, i === 0 ? 'Before' : ''),
+          el('b', {}, `${secs ? `ran ${fmtSecs(secs)}` : 'ran a while'}, then ${RUN_END[why] || `stopped (reason ${why})`}`)))));
+      c.append(el('h3', { class: 'minihead' }, 'Power'), box);
+    }
+
     const items = connlog.entries().slice(-14).reverse();
     const log = el('div', { class: 'connlog' });
     if (!items.length) log.append(el('div', { class: 'muted' }, 'Nothing yet.'));
@@ -1359,6 +1373,33 @@ function openConnection() {
   $('#sheetCard').scrollTop = keep;
 }
 $('#connChip').onclick = openConnection;
+
+// How a run of the pet ended (the reason the ESP32 gives at its next start).
+const RUN_END = {
+  1: 'the power went off', 3: 'it restarted', 4: 'it crashed', 5: 'it froze', 6: 'it froze', 7: 'it froze',
+  8: 'it woke up', 9: 'the power dipped too low', 15: 'the USB reset it',
+};
+
+// A plain-words reading of the power history, or null when nothing looks wrong.
+function powerAdvice(runs, lk) {
+  const recent = runs.slice(0, 4);
+  const dips = recent.filter(([why]) => why === 9).length;
+  if (dips || lk?.lp) {
+    return {
+      bad: true,
+      text: `The power dipped too low ${dips > 1 ? `${dips} times` : ''} recently (a "brownout"), so the pet restarted. The battery can't keep up: it's weak or half flat, or wired to the 5V pin with less than about 4.5 V, which the board needs there. The pet now uses less power after a dip, but a stronger supply is the real fix.`.replace(/\s+/g, ' '),
+    };
+  }
+  const cuts = recent.filter(([why, secs]) => why === 1 && secs > 0 && secs < 240);
+  if (cuts.length >= 2) {
+    const typical = cuts.map((r) => r[1]).sort((a, b) => a - b)[Math.floor(cuts.length / 2)];
+    return {
+      bad: true,
+      text: `The power went off after only about ${fmtSecs(typical)}, ${cuts.length} times in a row. If that's a power bank, it's switching itself off because the pet uses so little power. Look for its low-current or "always on" mode (often a double press of its button), or try a different power bank.`,
+    };
+  }
+  return null;
+}
 
 // ---------------------------------------------------------------- settings ----
 function toggle(on, onChange) {

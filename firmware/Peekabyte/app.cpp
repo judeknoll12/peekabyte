@@ -4,11 +4,12 @@
 #include "imu.h"
 #include "comms.h"
 #include "pet.h"
+#include "screens.h"
 #include "state.h"
 
 namespace app {
 
-static uint32_t lastFrame = 0, lastSim = 0;
+static uint32_t lastFrame = 0, lastSim = 0, lastRevive = 0;
 
 // BOOT button: tap = boop the pet, hold = show / hide the connect card.
 static void pollButton() {
@@ -38,6 +39,12 @@ void setup() {
   pinMode(PIN_BOOT_BTN, INPUT_PULLUP);
 
   bool loaded = state::load();
+  uint8_t why = (uint8_t)esp_reset_reason();
+  state::logBoot(why);
+  // Restarted because the supply dipped: use less power from here on (a weak battery can then
+  // often keep up), and say so on the screen.
+  bool brownout = why == ESP_RST_BROWNOUT;
+  if (brownout) setCpuFrequencyMhz(160);
   bool ok = gfx::begin(SET.driver);
   Serial.printf("OLED %s at 0x%02X (%s driver)\n", ok ? "found" : "NOT FOUND", OLED_I2C_ADDR,
                 SET.driver ? "SH1106" : "SSD1306");
@@ -46,8 +53,14 @@ void setup() {
 
   char bleName[32];
   snprintf(bleName, sizeof bleName, "Peeka %s", pet::name());
-  comms::begin(bleName, pet::handle, pet::connected);
+  comms::begin(bleName, pet::handle, pet::connected, brownout);
   Serial.printf("Bluetooth: advertising as \"%s\", free heap %u\n", bleName, (unsigned)ESP.getFreeHeap());
+  if (state::runCount()) {
+    const state::Run &r = state::runAt(0);
+    Serial.printf("[power] last run lasted %lus and ended with reset reason %u%s\n", (unsigned long)r.lasted, r.why,
+                  brownout ? " (brownout: low-power mode)" : "");
+  }
+  if (brownout) screens::toast("Power dipped: saving power", 3500);
   lastFrame = lastSim = millis();
 }
 
@@ -71,6 +84,10 @@ void loop() {
   }
   pet::periodic();
   comms::periodic();
+  if (now - lastRevive > 8000) {   // bring the screen back if a power dip reset it
+    lastRevive = now;
+    gfx::revive();
+  }
   delay(1);
 }
 
