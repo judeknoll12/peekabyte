@@ -67,6 +67,27 @@ export function cleanForSpeech(text) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// If the app dies while the natural voice is working (a crash, or iOS closing it for lack of
+// memory), the next start notices, and the phone voice speaks until you choose to try again,
+// instead of the same thing happening over and over.
+const BUSY_KEY = 'peekabyte.voiceBusy';
+let busyCount = 0;
+function busy(on) {
+  busyCount = Math.max(0, busyCount + (on ? 1 : -1));
+  try {
+    if (busyCount) localStorage.setItem(BUSY_KEY, String(Date.now()));
+    else localStorage.removeItem(BUSY_KEY);
+  } catch { /* private mode */ }
+}
+let crashedLastTime = (() => {
+  try {
+    const at = Number(localStorage.getItem(BUSY_KEY) || 0);
+    localStorage.removeItem(BUSY_KEY);
+    return isNative && at && Date.now() - at < 30 * 60 * 1000;
+  } catch { return false; }
+})();
+export const voiceCrashedLastTime = crashedLastTime;
+
 // Make sure the sound engine is actually playing (iOS parks it after interruptions).
 async function audioRunning() {
   const c = audioCtx();
@@ -130,6 +151,13 @@ export class Voice extends EventTarget {
     this.kMisses = 0;
     this.emit();
     await nativeVoiceCheck;
+    if (nativeTts && crashedLastTime) {   // only the first time: "Try again" loads it
+      crashedLastTime = false;
+      this.kState = 'error';
+      this.kInfo = 'Last time the app closed while the natural voice was working, probably short on memory';
+      this.emit();
+      return;
+    }
     if (nativeTts) this.loadNative();
     else this.loadWeb();
   }
@@ -153,7 +181,9 @@ export class Voice extends EventTarget {
       this.kProgress = 1;
       this.kInfo = 'Warming up…';
       this.emit();
-      const r = await call('tts.load', { model: NATIVE_VOICE_FILES[0].file, voices: NATIVE_VOICE_FILES[1].file });
+      busy(true);
+      const r = await call('tts.load', { model: NATIVE_VOICE_FILES[0].file, voices: NATIVE_VOICE_FILES[1].file })
+        .finally(() => busy(false));
       this.kBackend = 'native';
       this.kWhere = r.rate ? 'built into the app' : 'on this iPhone';
       this.kState = 'ready';
@@ -252,11 +282,17 @@ export class Voice extends EventTarget {
   }
 
   async renderNative(text, speed) {
-    if (this.kNapping) {   // set aside to free memory: load it again first (the phone voice covers meanwhile)
-      await call('tts.load', { model: NATIVE_VOICE_FILES[0].file, voices: NATIVE_VOICE_FILES[1].file });
-      this.kNapping = false;
+    busy(true);
+    let r;
+    try {
+      if (this.kNapping) {   // set aside to free memory: load it again first (the phone voice covers meanwhile)
+        await call('tts.load', { model: NATIVE_VOICE_FILES[0].file, voices: NATIVE_VOICE_FILES[1].file });
+        this.kNapping = false;
+      }
+      r = await call('tts.speak', { text, sid: SPEAKER[this.cfg.voice] ?? 3, speed });
+    } finally {
+      busy(false);
     }
-    const r = await call('tts.speak', { text, sid: SPEAKER[this.cfg.voice] ?? 3, speed });
     const bin = atob(r.pcm);
     const pcm = new Float32Array(bin.length >> 1);
     for (let i = 0; i < pcm.length; i++) {
@@ -346,7 +382,7 @@ export class Voice extends EventTarget {
   whyNotKokoro() {
     if (this.kTooSlow) return 'the natural voice was too slow, so the phone voice is filling in';
     if (this.kState === 'loading') return 'the natural voice is still getting ready';
-    if (this.kState === 'error') return `the natural voice failed: ${this.kInfo}`;
+    if (this.kState === 'error') return `the natural voice isn't working (${this.kInfo.charAt(0).toLowerCase()}${this.kInfo.slice(1)})`;
     return "the natural voice isn't downloaded";
   }
 

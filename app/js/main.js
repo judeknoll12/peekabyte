@@ -12,7 +12,9 @@ import {
   TRAITS, TRICKS, TRICK_MODE, TRICK_MOVES_MAX, enc, fwAtLeast,
 } from './protocol.js';
 import * as sfx from './sfx.js';
-import { EFFECTS, KOKORO_VOICES, PRESETS, Voice, kokoroDownloadMB, nativeVoiceCheck, phoneVoices } from './voice.js';
+import {
+  EFFECTS, KOKORO_VOICES, PRESETS, Voice, kokoroDownloadMB, nativeVoiceCheck, phoneVoices, voiceCrashedLastTime,
+} from './voice.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -1291,7 +1293,7 @@ function connReport(app) {
     `Link: ${link.kind || 'none'}, ${link.state}; screen lock ${awake.supported ? (awake.active ? 'held' : `not held${awake.error ? ` (${awake.error})` : ''}`) : 'not supported'}`,
     S ? `Pet: ${S.name}, firmware ${S.v}, packets ${S.mtu} B, free memory ${S.heap} B` : 'Pet: not connected',
     lk ? `Pet link: ${JSON.stringify(lk)}` : '',
-    `Voice: ${voice.cfg.engine}; natural voice ${voice.kState}${voice.kBackend ? ` (${voice.kBackend})` : ''}${voice.kTooSlow ? ', too slow' : ''}${voice.kInfo ? `, ${voice.kInfo}` : ''}; played by ${native.ok ? 'the app' : 'the page'}; last line: ${voice.last ? `${voice.last.how}${voice.last.note ? ` (${voice.last.note})` : ''}` : 'none yet'}`,
+    `Voice: ${voice.cfg.engine}; natural voice ${voice.kState}${voice.kBackend ? ` (${voice.kBackend})` : ''}${voice.kTooSlow ? ', too slow' : ''}${voice.kInfo ? `, ${voice.kInfo}` : ''}; played by ${native.ok ? 'the app' : 'the page'}${voiceCrashedLastTime ? '; the app closed during the natural voice last time' : ''}; last line: ${voice.last ? `${voice.last.how}${voice.last.note ? ` (${voice.last.note})` : ''}` : 'none yet'}`,
     ui.audioState ? `Sound: ${ui.audioState.route || '?'} (${ui.audioState.port || '?'}), volume ${Math.round((ui.audioState.volume || 0) * 100)}%${ui.audioState.error ? `, error: ${ui.audioState.error}` : ''}` : '',
     '', 'Recent events:',
     ...connlog.entries().map((it) => `${new Date(it.t).toISOString()}  ${it.text}`),
