@@ -1,0 +1,35 @@
+# XcodeGen spec for the Peekabyte iPhone app. The cloud build (.github/workflows/ios.yml)
+# downloads llama.cpp's prebuilt framework into Frameworks/, runs `xcodegen generate`,
+# and builds an unsigned .ipa that Sideloadly or AltStore signs with your own Apple ID.
+name: Peekabyte
+options:
+  bundleIdPrefix: io.github.judeknoll12
+  deploymentTarget:
+    iOS: "16.4"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    TARGETED_DEVICE_FAMILY: "1"
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+targets:
+  Peekabyte:
+    type: application
+    platform: iOS
+    sources:
+      - path: Peekabyte
+    settings:
+      base:
+        PRODUCT_NAME: Peekabyte
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.judeknoll12.peekabyte
+        INFOPLIST_FILE: Peekabyte/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
+        SUPPORTS_MACCATALYST: NO
+        SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
+    dependencies:
+      - framework: Frameworks/llama.xcframework
+        embed: true

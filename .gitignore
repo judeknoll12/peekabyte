@@ -4,3 +4,5 @@ oled.png
 ble.png
 build/
 .claude/
+ios/Frameworks/
+ios/Peekabyte.xcodeproj/

@@ -1,0 +1,74 @@
+# Builds the iPhone app on a cloud Mac and publishes an unsigned .ipa on the "ios-latest"
+# release. Sideloadly or AltStore signs it with your own Apple ID when you install it.
+name: iPhone app
+
+on:
+  push:
+    branches: [main]
+    paths: ['ios/**', '.github/workflows/ios.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ios
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 40
+    env:
+      LLAMA_BUILD: b11242
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get llama.cpp for iPhone
+        run: |
+          curl -sSL -o llama.zip "https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_BUILD}/llama-${LLAMA_BUILD}-xcframework.zip"
+          unzip -q llama.zip 'build-apple/llama.xcframework/*' -d "$RUNNER_TEMP/llama"
+          mkdir -p ios/Frameworks
+          mv "$RUNNER_TEMP/llama/build-apple/llama.xcframework" ios/Frameworks/
+
+      - name: Make the Xcode project
+        run: |
+          brew install xcodegen
+          cd ios && xcodegen generate
+
+      - name: Build
+        run: |
+          cd ios
+          xcodebuild -version
+          if ! xcodebuild -project Peekabyte.xcodeproj -scheme Peekabyte -configuration Release \
+               -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
+               CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build > build.log 2>&1; then
+            # Surface compile errors as annotations (readable from the run page and the API).
+            grep -E ": error: |error: " build.log | sed -E 's#^/Users/runner/work/[^/]+/[^/]+/##' | sort -u | head -10 \
+              | while IFS= read -r line; do echo "::error::$line"; done
+            tail -80 build.log
+            exit 1
+          fi
+          grep -E ": warning: " build.log | grep -v -i deprecat | sed -E 's#^/Users/runner/work/[^/]+/[^/]+/##' | sort -u | head -10 \
+            | while IFS= read -r line; do echo "::warning::$line"; done || true
+
+      - name: Package
+        run: |
+          mkdir Payload
+          cp -R ios/build/Build/Products/Release-iphoneos/Peekabyte.app Payload/
+          zip -qry Peekabyte.ipa Payload
+          ls -lh Peekabyte.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Peekabyte-ipa
+          path: Peekabyte.ipa
+
+      - name: Publish the latest build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete ios-latest --yes --cleanup-tag || true
+          gh release create ios-latest Peekabyte.ipa --prerelease --target "$GITHUB_SHA" \
+            --title "iPhone app (latest build)" \
+            --notes "Built from ${GITHUB_SHA::7}. Install it with Sideloadly or AltStore; see the README for the steps."
