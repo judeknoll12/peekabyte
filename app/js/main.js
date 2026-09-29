@@ -1,5 +1,7 @@
 // Peekabyte phone app.
+import { awake, keepAwake } from './awake.js';
 import { Brain, MODELS } from './brain.js';
+import * as connlog from './connlog.js';
 import { Link } from './link.js';
 import { Mirror, TINTS } from './mirror.js';
 import { line } from './phrases.js';
@@ -28,6 +30,7 @@ function el(tag, attrs = {}, ...kids) {
 // ---------------------------------------------------------------- preferences ----
 const DEFAULTS = {
   owner: '', speak: true, sfx: true, sfxVol: 0.6, tint: 'ice', brain: '', aiMode: 'special', kokoroOk: false,
+  keepAwake: true, lastPet: '',
   voice: { preset: 'nemo', engine: 'kokoro', voice: 'af_heart', pitch: 0, speed: 1, fx: 'none', volume: 1, systemVoice: '' },
 };
 let prefs = structuredClone(DEFAULTS);
@@ -188,23 +191,126 @@ function showMain(on) {
   $('#main').classList.toggle('hidden', !on);
 }
 
+const signalBars = (rssi) => (rssi >= -60 ? 4 : rssi >= -70 ? 3 : rssi >= -80 ? 2 : 1);
+const signalWord = (rssi) => ['', 'weak', 'fair', 'good', 'excellent'][signalBars(rssi)];
+function fmtSecs(s) {
+  s = Math.round(s);
+  if (s < 60) return `${s} s`;
+  if (s < 3600) return `${Math.floor(s / 60)} min${s % 60 && s < 600 ? ` ${s % 60} s` : ''}`;
+  return `${Math.floor(s / 3600)} h ${Math.round((s % 3600) / 60)} min`;
+}
+const fmtMs = (ms) => (ms < 1000 ? `${Math.round(ms)} ms` : `${+(ms / 1000).toFixed(1)} s`);
+function fmtClock(t) {
+  const d = new Date(t);
+  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' });
+  return d.toDateString() === new Date().toDateString() ? time : `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${time}`;
+}
+
+function renderConn() {
+  const st = link.state;
+  $('#connDot').className = 'dot' + (st === 'connected' ? ' on' : st === 'lost' || st === 'connecting' ? ' warn' : '');
+  $('#connText').textContent = st === 'connected' ? 'Connected' : st === 'lost' ? 'Reconnecting…' : st === 'connecting' ? 'Connecting…' : 'Offline';
+  const rs = S?.lk?.rs;
+  const n = st === 'connected' && link.kind === 'ble' && S?.lk?.on && rs != null && rs < 20 ? signalBars(rs) : 0;
+  const bars = $('#connBars');
+  bars.classList.toggle('hidden', !n);
+  bars.dataset.n = n;
+  bars.title = n ? `Signal ${signalWord(rs)} (${rs} dBm)` : '';
+}
+
+function updateConnectButton() {
+  $('#btnBleText').textContent = prefs.lastPet ? `Connect to ${prefs.lastPet}` : 'Connect with Bluetooth';
+}
+
 link.addEventListener('status', (e) => {
-  const { state, name } = e.detail;
-  const dot = $('#connDot'), txt = $('#connText');
-  dot.className = 'dot' + (state === 'connected' ? ' on' : state === 'lost' || state === 'connecting' ? ' warn' : '');
-  txt.textContent = state === 'connected' ? 'Connected' : state === 'lost' ? 'Reconnecting…' : state === 'connecting' ? 'Connecting…' : 'Offline';
+  const { state, name, why, dropped, downFor, replaced } = e.detail;
+  renderConn();
   $('#led').classList.toggle('on', state === 'connected');
   if (state === 'connected') {
     showMain(true);
     $('#connectStatus').textContent = '';
     send(enc.hello(location.protocol === 'https:' ? location.origin + location.pathname : ''));
     lastFrameAt = performance.now();
+    if (link.kind === 'ble') {
+      keepAwake(prefs.keepAwake);
+      if (name && name !== prefs.lastPet) { prefs.lastPet = name; savePrefs(); updateConnectButton(); }
+      connlog.log(downFor ? `Reconnected after ${fmtSecs(downFor / 1000)}` : `Connected to ${name || 'the pet'}`, 'ok');
+    }
   } else if (state === 'connecting') {
     $('#connectStatus').textContent = `Connecting to ${name || 'your pet'}…`;
-  } else if (state === 'idle' && !S) {
-    showMain(false);
+  } else if (state === 'lost') {
+    if (dropped) connlog.log(`Link lost (${why || 'no reason given'}). Reconnecting…`, 'warn');
+  } else if (state === 'idle') {
+    if (replaced) {
+      keepAwake(false);
+      connlog.log('Another phone connected to the pet', 'warn');
+      showMain(false);
+      $('#connectStatus').textContent = `Another phone connected to ${name || 'your pet'}. Tap Connect to take it back.`;
+    } else if (link.userClosed) {
+      keepAwake(false);
+    }
+    if (!S) showMain(false);
   }
+  if (ui.sheet === 'conn') openConnection();
 });
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && link.connected && link.kind === 'ble') connlog.log('App went to the background', 'info');
+});
+
+// The pet reports its side of the link: past drops (with the reason only it can see) and restarts.
+let petBoot = 0;
+function trackLink(lk) {
+  if (!lk) return;
+  const boot = Date.now() - lk.up * 1000;
+  const bootKey = Math.round(boot / 20000);
+  const why = connlog.RESET_WHY[lk.rr] || `reason ${lk.rr}`;
+  if (petBoot && boot - petBoot > 20000) {
+    connlog.logOnce(`boot:${bootKey}`, `The pet restarted (${why})`, connlog.BAD_RESETS.has(lk.rr) ? 'warn' : 'info', boot);
+  } else if (!petBoot && connlog.BAD_RESETS.has(lk.rr)) {
+    connlog.logOnce(`boot:${bootKey}`, `The pet restarted (${why})`, 'warn', boot);
+  }
+  petBoot = boot;
+  for (const [at, lasted, code] of lk.dr || []) {
+    connlog.logOnce(`drop:${bootKey}:${at}:${code}`, `Pet: link ended after ${fmtSecs(lasted)}. ${connlog.dropWhy(code)}`,
+      code === 0x08 || code === 0x22 ? 'warn' : 'info', boot + at * 1000);
+  }
+}
+
+// ---------------------------------------------------------------- crash guard ----
+// Phones kill a web page that uses too much memory (the AI models are big), which drops
+// Bluetooth too. If the last visit ended that way while a model was loaded, hold off on it.
+const GUARD_KEY = 'peekabyte.alive';
+const lastVisit = (() => { try { return JSON.parse(localStorage.getItem(GUARD_KEY) || 'null'); } catch { return null; } })();
+const crashedLastTime = !!(lastVisit?.vis && Date.now() - lastVisit.t < 3600e3);
+function guardBeat() {
+  try {
+    localStorage.setItem(GUARD_KEY, JSON.stringify({
+      t: Date.now(), vis: !document.hidden,
+      ai: brain.state === 'loading' || brain.state === 'ready' ? prefs.brain : '',
+      tts: voice.kState === 'loading' || voice.kState === 'ready',
+    }));
+  } catch { /* private mode */ }
+}
+function startGuard() {
+  guardBeat();
+  setInterval(guardBeat, 2000);
+  document.addEventListener('visibilitychange', guardBeat);
+  addEventListener('pagehide', () => { try { localStorage.removeItem(GUARD_KEY); } catch { /* ignore */ } });
+  if (!crashedLastTime) return;
+  const heavy = [lastVisit.ai && MODELS.find((m) => m.key === lastVisit.ai)?.name && `the ${MODELS.find((m) => m.key === lastVisit.ai).name} AI brain`,
+    lastVisit.tts && 'the natural voice'].filter(Boolean);
+  connlog.log(`The app closed unexpectedly${heavy.length ? ` while running ${heavy.join(' and ')}` : ''}`, 'warn', lastVisit.t);
+  if (!heavy.length) return;
+  ui.aiPaused = true;
+  openSheet((c) => {
+    c.append(el('h2', {}, '😵 The app closed unexpectedly'),
+      el('div', { class: 'sub' }, `Last time, Peekabyte stopped while running ${heavy.join(' and ')}. That usually means the phone ran out of memory, which also drops the Bluetooth link. They're paused for now.`),
+      el('div', { class: 'row' },
+        el('button', { class: 'btn grow', onclick: () => { ui.aiPaused = false; closeSheet(); applyVoice(); if (prefs.brain) brain.load(prefs.brain); } }, 'Load them anyway'),
+        el('button', { class: 'btn primary grow', onclick: () => { prefs.brain = ''; prefs.kokoroOk = false; savePrefs(); ui.aiPaused = false; closeSheet(); renderBrainCard(); } }, 'Turn them off')));
+  }, 'crash');
+}
 
 link.addEventListener('binary', (e) => {
   if (mirror.apply(e.detail)) {
@@ -246,6 +352,8 @@ function onState(m) {
   const wasEgg = S && S.stage === 0;
   S = m;
   link.setMtu(m.mtu || 23);
+  trackLink(m.lk);
+  renderConn();
   if (first && !ui.look) ui.look = [...m.av];
   if (wasEgg && m.stage > 0) {
     confetti(140);
@@ -263,6 +371,7 @@ function renderAll() {
   if (ui.tab === 'style') renderStyle();
   if (ui.tab === 'more') renderSettings();
   if (ui.sheet === 'game') renderGameSheet();
+  if (ui.sheet === 'conn') openConnection();
 }
 
 function renderHeader() {
@@ -771,20 +880,85 @@ function showTab(t) {
 }
 $$('.tab').forEach((b) => b.addEventListener('click', () => showTab(b.dataset.tab)));
 
-$('#connChip').onclick = () => openSheet((c) => {
-  c.append(el('h2', {}, link.connected ? 'Connected' : 'Not connected'),
-    el('div', { class: 'sub' }, link.kind === 'bridge' ? 'Using the USB bridge on this computer.' : `Bluetooth · ${link.device?.name || ''}`));
-  if (S) {
-    c.append(el('div', { class: 'card', style: 'margin-bottom:12px' },
-      el('div', { class: 'muted', style: 'font-size:14px;line-height:1.7' },
-        `Firmware ${S.v} · motion sensor ${S.imu} · packet size ${S.mtu} · free memory ${Math.round(S.heap / 1024)} KB`)));
-  }
-  c.append(el('div', { class: 'row' },
-    el('button', { class: 'btn grow', onclick: () => { send(enc.sys(SYS.CONNECT_CARD)); closeSheet(); } }, '📇 Show connect card'),
-    link.connected
-      ? el('button', { class: 'btn danger grow', onclick: () => { closeSheet(); link.disconnect(); S = null; showMain(false); } }, 'Disconnect')
-      : el('button', { class: 'btn primary grow', onclick: () => { closeSheet(); connectBle(); } }, 'Connect')));
-}, 'conn');
+// ---------------------------------------------------------------- connection page ----
+function awakeNote() {
+  if (!awake.supported) return "This browser can't keep the screen on. While you play, set Auto-Lock to Never (Settings › Display & Brightness), or the link drops when the phone locks.";
+  if (awake.active) return 'On: the phone stays awake while the pet is connected, so the link doesn\'t drop when it would lock';
+  if (awake.error) return `The phone said no: ${awake.error}. Tap anywhere to try again.`;
+  return 'Stops the phone locking (which drops the link) while the app is open';
+}
+
+function connReport() {
+  const lk = S?.lk;
+  const lines = [
+    `Peekabyte connection report, ${new Date().toString()}`,
+    `Browser: ${navigator.userAgent}`,
+    `Link: ${link.kind || 'none'}, ${link.state}; screen lock ${awake.supported ? (awake.active ? 'held' : `not held${awake.error ? ` (${awake.error})` : ''}`) : 'not supported'}`,
+    S ? `Pet: ${S.name}, firmware ${S.v}, packets ${S.mtu} B, free memory ${S.heap} B` : 'Pet: not connected',
+    lk ? `Pet link: ${JSON.stringify(lk)}` : '',
+    '', 'Recent events:',
+    ...connlog.entries().map((it) => `${new Date(it.t).toISOString()}  ${it.text}`),
+  ];
+  return lines.filter((l) => l !== null).join('\n');
+}
+
+function openConnection() {
+  const keep = ui.sheet === 'conn' ? $('#sheetCard').scrollTop : 0;
+  openSheet((c) => {
+    const lk = S?.lk;
+    const ble = link.kind === 'ble';
+    const title = link.connected ? 'Connected' : link.state === 'lost' ? 'Reconnecting…' : link.state === 'connecting' ? 'Connecting…' : 'Not connected';
+    c.append(el('h2', {}, `📶 ${title}`),
+      el('div', { class: 'sub' }, link.kind === 'bridge' ? 'Using the USB bridge on this computer.' : `Bluetooth · ${link.device?.name || prefs.lastPet || 'no pet yet'}`));
+
+    const facts = [];
+    if (lk?.on && ble && link.connected) {
+      if (lk.rs < 20) facts.push(['Signal', `${signalWord(lk.rs)} (${lk.rs} dBm)`]);
+      if (lk.ci) facts.push(['Link', `talks every ${fmtMs(lk.ci * 1.25)}, waits ${fmtMs(lk.to * 10)} before giving up`]);
+      facts.push(['This link', `up for ${fmtSecs(lk.cs)}`]);
+    }
+    if (lk) facts.push(['Pet', `running for ${fmtSecs(lk.up)}, last start: ${connlog.RESET_WHY[lk.rr] || lk.rr}`]);
+    if (S) facts.push(['Device', `firmware ${S.v} · ${S.imu} · ${S.mtu} B packets · ${Math.round(S.heap / 1024)} KB free`]);
+    if (facts.length) {
+      c.append(el('div', { class: 'card facts', style: 'margin-bottom:12px' },
+        ...facts.map(([k, v]) => el('div', { class: 'fact' }, el('span', {}, k), el('b', {}, v)))));
+    }
+
+    if (ble || !link.kind) {
+      c.append(el('div', { class: 'card', style: 'margin-bottom:12px;padding:4px 16px' },
+        setRow('Keep the screen on', awakeNote(), toggle(prefs.keepAwake, (on) => {
+          prefs.keepAwake = on;
+          savePrefs();
+          keepAwake(on && link.state !== 'idle').then(() => { if (ui.sheet === 'conn') openConnection(); });
+        }))));
+    }
+
+    const items = connlog.entries().slice(-14).reverse();
+    const log = el('div', { class: 'connlog' });
+    if (!items.length) log.append(el('div', { class: 'muted' }, 'Nothing yet.'));
+    items.forEach((it) => log.append(el('div', { class: `item ${it.kind}` }, el('span', { class: 'when' }, fmtClock(it.t)), el('span', {}, it.text))));
+    c.append(el('h3', { class: 'minihead' }, 'Recent'), log);
+
+    c.append(el('div', { class: 'row wrap', style: 'margin-top:14px' },
+      el('button', {
+        class: 'btn small',
+        onclick: async () => {
+          const text = connReport();
+          try { await navigator.clipboard.writeText(text); toast('Report copied'); } catch {
+            openSheet((s) => s.append(el('h2', {}, 'Connection report'), el('div', { class: 'sub' }, 'Select and copy this:'),
+              el('textarea', { class: 'report', readonly: true }, text)), 'report');
+          }
+        },
+      }, '📋 Copy report'),
+      el('button', { class: 'btn small', onclick: () => { connlog.clear(); openConnection(); } }, '🧹 Clear'),
+      S && link.connected ? el('button', { class: 'btn small', onclick: () => { send(enc.sys(SYS.CONNECT_CARD)); closeSheet(); } }, '📇 Connect card') : null,
+      link.connected || link.state === 'lost'
+        ? el('button', { class: 'btn small danger', onclick: () => { closeSheet(); link.disconnect(); S = null; showMain(false); } }, 'Disconnect')
+        : el('button', { class: 'btn small primary', onclick: () => { closeSheet(); connectBle(); } }, 'Connect')));
+  }, 'conn');
+  $('#sheetCard').scrollTop = keep;
+}
+$('#connChip').onclick = openConnection;
 
 // ---------------------------------------------------------------- settings ----
 function toggle(on, onChange) {
@@ -810,7 +984,7 @@ function slider(min, max, step, value, onInput, fmt) {
 
 function applyVoice() {
   voice.configure(prefs.voice);
-  if (prefs.voice.engine === 'kokoro' && prefs.kokoroOk && voice.kState === 'off') voice.loadKokoro();
+  if (prefs.voice.engine === 'kokoro' && prefs.kokoroOk && voice.kState === 'off' && !ui.aiPaused) voice.loadKokoro();
 }
 
 function renderSettings() {
@@ -941,6 +1115,7 @@ function renderSettings() {
 
   // --- Device
   const dv = el('div', { class: 'card' }, el('h3', {}, '⚙️ Device'));
+  dv.append(setRow('Connection', 'Signal, keep-awake, and why the link dropped', el('button', { class: 'btn small', onclick: openConnection }, '📶 Open')));
   if (S) {
     dv.append(setRow('Time speed', 'For testing: needs change faster', select([[1, 'Normal'], [10, '10×'], [60, '60×'], [600, '600×']], S.set.ts, (x) => send(enc.set(SET.TIMESCALE, Number(x))))));
     dv.append(el('div', { class: 'row wrap', style: 'margin-top:12px' },
@@ -1018,11 +1193,13 @@ function initMirror() {
 // ---------------------------------------------------------------- start ----
 function init() {
   initMirror();
+  startGuard();
   sfx.setVolume(prefs.sfxVol);
   sfx.setEnabled(prefs.sfx);
   applyVoice();
-  if (prefs.brain) brain.load(prefs.brain);
+  if (prefs.brain && !ui.aiPaused) brain.load(prefs.brain);
   renderBrainCard();
+  updateConnectButton();
   document.addEventListener('pointerdown', () => sfx.unlock(), { once: true });
   window.speechSynthesis?.addEventListener?.('voiceschanged', () => { if (ui.tab === 'more') renderSettings(); });
 

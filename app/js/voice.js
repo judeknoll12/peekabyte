@@ -97,7 +97,10 @@ export class Voice extends EventTarget {
       this.worker = null;
       this.emit();
     };
-    w.postMessage({ type: 'load', device: 'auto' });
+    // Phones get the small CPU model (~90 MB): the GPU one is ~330 MB, and a page that uses
+    // too much memory gets killed, taking the Bluetooth link with it.
+    const phone = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) || navigator.userAgentData?.mobile;
+    w.postMessage({ type: 'load', device: phone ? 'wasm' : 'auto' });
   }
 
   // Queue a line; resolves when it has been spoken (or skipped).

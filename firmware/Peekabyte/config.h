@@ -2,7 +2,7 @@
 #include <Arduino.h>
 
 #define APP_NAME     "Peekabyte"
-#define FW_VERSION   "1.0.0"
+#define FW_VERSION   "1.1.0"
 
 // ---- Hardware ---------------------------------------------------------------
 #define PIN_I2C_SDA    21

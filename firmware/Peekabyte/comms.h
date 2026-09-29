@@ -20,10 +20,11 @@ void sendTo(uint32_t cid, const String &json);
 void requestFrame(uint32_t cid, bool keyframe);
 void pushFrames();                        // call right after gfx::present()
 
-bool bleConnected();
+bool bleConnected();                      // a Bluetooth link is up
 bool serialActive();
-bool anyone();
+bool anyone();                            // someone is listening: the USB bridge, or a phone app that's awake
 uint16_t bleMtu();
 void setName(const char *bleName);        // takes effect when advertising restarts
+void linkJson(String &j);                 // link health for the phone's Connection page
 
 }  // namespace comms

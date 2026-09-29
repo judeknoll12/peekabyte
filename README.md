@@ -12,6 +12,14 @@ A pocket pet made of two very expressive eyes. It lives on an ESP32 with a 0.96"
 
 The app reconnects by itself next time. The pet keeps living even when your phone isn't around. Its name and look never change unless you change them in the app.
 
+### If it keeps disconnecting
+
+- **Keep the app open.** iPhones pause Bluetooth for apps in the background and when the screen locks. The app keeps the screen awake while the pet is connected (Settings → Connection → Keep the screen on). If your browser can't do that, set Auto‑Lock to Never while you play. Coming back to the app reconnects by itself within a second or two.
+- **Tap the green Connected chip** (or Settings → Connection) to see the signal strength and a log of recent drops with the reason the pet saw: signal lost, the phone closed the link, another phone connected, or the pet restarted. **Copy report** puts it all on the clipboard.
+- **Signal lost** means too far away or too much in the way. The pet transmits at full power; walls, pockets and microwaves still get in the way.
+- **The pet restarted (power dip)** means the USB supply is too weak. Try another cable or charger.
+- If the app itself closes while the AI brain or the natural voice is loading, the phone ran out of memory. The app notices, pauses them, and asks what to do. The phone‑voice and phrase‑book modes use almost no memory.
+
 ## Taking care of it
 
 | Need | How to help |

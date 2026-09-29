@@ -76,6 +76,11 @@ static uint32_t previewAt = 0;
 static uint32_t lastSave = 0, lastPush = 0;
 static bool stateDirty = true;
 static uint8_t playing = 0;   // game being played
+// The phone link: a short blip (screen lock, app switch) shouldn't make the pet wave
+// goodbye and greet you all over again.
+constexpr uint32_t BLIP_MS = 30000;
+static uint32_t phoneLeftAt = 0;   // when the Bluetooth link last dropped (0 = not since boot)
+static uint32_t byeAt = 0;         // wave goodbye at this time unless the phone is back
 
 // eating / medicine
 static int8_t eatFood = -1;   // -1 none, 0..11 food, 100 pill, 101 treat
@@ -1334,7 +1339,7 @@ void handle(uint32_t cid, const uint8_t *d, size_t n) {
       }
       comms::sendTo(cid, stateJson());
       comms::requestFrame(cid, true);
-      if (mode == M_LIFE && !P.asleep) {
+      if (mode == M_LIFE && !P.asleep && (cid != comms::BLE_CLIENT || !phoneLeftAt || millis() - phoneLeftAt > BLIP_MS)) {
         joyT = 0.8f;
         say("greet", nullptr, true);
       }
@@ -1439,10 +1444,15 @@ void handle(uint32_t cid, const uint8_t *d, size_t n) {
 
 void connected(uint32_t cid, bool on) {
   Serial.printf("[link] %s %s\n", cid == comms::BLE_CLIENT ? "Bluetooth" : "USB", on ? "connected" : "disconnected");
+  bool blip = cid == comms::BLE_CLIENT && phoneLeftAt && millis() - phoneLeftAt < BLIP_MS;
   if (on) {
     if (card) card = false;
-    if (cid == comms::BLE_CLIENT) screens::toast("Phone connected", 1300);
+    if (cid == comms::BLE_CLIENT) {
+      byeAt = 0;
+      if (!blip) screens::toast("Phone connected", 1300);
+    }
   } else {
+    if (cid == comms::BLE_CLIENT) phoneLeftAt = millis() | 1;
     petting = false;
     phoneLook = false;
     talk = 0;
@@ -1451,7 +1461,7 @@ void connected(uint32_t cid, bool on) {
       previewing = false;
     }
     if (games::active() && !comms::anyone()) games::quit();
-    if (mode == M_LIFE && !P.asleep && cid == comms::BLE_CLIENT) fx::say("Bye bye!", 1.5f);
+    if (cid == comms::BLE_CLIENT) byeAt = millis() + 5000;   // only if it doesn't come right back
   }
   stateDirty = true;
 }
@@ -1525,12 +1535,21 @@ static String stateJson() {
   j += ",\"imu\":\""; j += imu::chipName();
   j += "\",\"mtu\":"; j += comms::bleMtu();
   j += ",\"heap\":"; j += ESP.getFreeHeap();
+  j += ",\"lk\":"; comms::linkJson(j);
   j += '}';
   return j;
 }
 
 void periodic() {
   uint32_t now = millis();
+  if (byeAt && (int32_t)(now - byeAt) > 0) {
+    byeAt = 0;
+    if (!comms::bleConnected() && mode == M_LIFE && !P.asleep) fx::say("Bye bye!", 1.5f);
+  }
+  // A phone app that went quiet (screen off) and came back: bring it up to date right away.
+  static bool listening = false;
+  if (comms::anyone() && !listening) stateDirty = true;
+  listening = comms::anyone();
   bool fast = games::active();
   if (comms::anyone() && ((stateDirty && now - lastPush > (fast ? 250u : 400u)) || now - lastPush > 5000)) {
     stateDirty = false;
